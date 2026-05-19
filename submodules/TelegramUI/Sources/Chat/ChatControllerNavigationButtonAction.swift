@@ -120,12 +120,27 @@ import PeerNameColorScreen
 import ChatEmptyNode
 import ChatMediaInputStickerGridItem
 import AdsInfoScreen
+import MediaBrowserUI
 
 extension ChatControllerImpl {
     func navigationButtonAction(_ action: ChatNavigationButtonAction) {
         switch action {
         case .spacer, .toggleInfoPanel:
             break
+        case .openMediaBrowser:
+            if case let .peer(peerId) = self.chatLocation {
+                let controller = MediaBrowserController(context: self.context, peerId: peerId)
+                controller.modalPresentationStyle = .overCurrentContext
+                self.navigationController?.interactivePopGestureRecognizer?.isEnabled = false
+                controller.dismissed = { [weak self] in
+                    self?.navigationController?.interactivePopGestureRecognizer?.isEnabled = true
+                }
+                controller.onJumpToMessageRequested = { [weak self] messageId in
+                    guard let self = self else { return }
+                    self.navigateToMessage(from: nil, to: .id(messageId, NavigateToMessageParams(timestamp: nil, quote: nil)))
+                }
+                self.present(controller, in: .current)
+            }
         case .cancelMessageSelection:
             self.updateChatPresentationInterfaceState(animated: true, interactive: true, { $0.updatedInterfaceState { $0.withoutSelectionState() } })
         case .clearHistory:

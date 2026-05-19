@@ -13,6 +13,7 @@ public enum ChatNavigationButtonAction: Equatable {
     case search(hasTags: Bool)
     case dismiss
     case toggleInfoPanel
+    case openMediaBrowser
     case spacer
     case edit
 }

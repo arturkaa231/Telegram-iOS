@@ -35,6 +35,10 @@ The build needs `TELEGRAM_CODESIGNING_GIT_PASSWORD` in the environment. It is se
 - External code is located in `third-party/`
 - No tests are used at the moment
 
+## Architecture map
+
+Quick orientation for which submodules do what, plus the gotchas that bite repeatedly (custom pop gesture, media playback pipeline, etc): [`docs/superpowers/architecture-map.md`](docs/superpowers/architecture-map.md). Read first when entering a new area.
+
 ## Postbox → TelegramEngine refactor (in progress)
 
 A gradual migration is underway to eliminate direct `import Postbox` from consumer submodules in favor of `TelegramEngine`.

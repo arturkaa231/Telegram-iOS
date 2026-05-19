@@ -1,0 +1,47 @@
+schema: spec-driven
+
+context: |
+  # Multigram
+  Форк Telegram iOS с тремя дополнительными слоями поверх оригинального клиента:
+  - Медиабраузер — расширенный просмотр медиа
+  - Плеер — улучшенный медиаплеер
+  - Sync — синхронизация данных
+
+  ## Tech Stack
+  - Platform: iOS 13+, UIKit
+  - Language: Swift, Objective-C
+  - Build: Bazel 8.4.2 via Make.py
+  - IDE: Xcode 26.2 (code editing only, build via CLI)
+  - Base: Telegram iOS (upstream)
+
+  ## Project Structure
+  - Telegram/ — основное приложение и extensions
+  - submodules/ — библиотеки (TelegramCore, TelegramUI, Postbox, etc.)
+  - third-party/ — внешние зависимости
+  - build-system/ — Bazel конфигурация и Make.py обёртка
+
+  ## Build
+  CLI only (Xcode project не собирается из-за rules_xcodeproj):
+  ```
+  bazel build //Telegram:Telegram -c dbg --ios_multi_cpus=sim_arm64 \
+    --//Telegram:disableExtensions=True --//Telegram:disableProvisioningProfiles=True
+  ```
+
+  ## Conventions
+  - Спецификации на русском
+  - Код: PascalCase для типов, camelCase для методов/переменных
+  - Upstream код не менять без необходимости — расширять через новые модули
+
+rules:
+  proposal:
+    - Указывать какие submodules/ затрагиваются
+    - Явно разделять "новый код" vs "изменения в upstream"
+  specs:
+    - Требования на русском с RFC 2119 (SHALL/MUST)
+    - Каждое требование MUST иметь сценарий WHEN/THEN
+  design:
+    - Описывать архитектурный подход без привязки к конкретным файлам
+    - Фиксировать решения с обоснованием
+  tasks:
+    - Указывать конкретные файлы и модули для изменений
+    - Каждая задача должна быть собираема и проверяема отдельно

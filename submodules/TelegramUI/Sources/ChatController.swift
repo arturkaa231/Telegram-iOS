@@ -303,6 +303,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     
     var moreBarButton: MoreHeaderButton
     var moreInfoNavigationButton: ChatNavigationButton?
+    var mediaBrowserNavigationButton: ChatNavigationButton?
+    var mediaBrowserCircleButton: UIButton?
     
     var historyStateDisposable: Disposable?
     
@@ -6063,6 +6065,35 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         
         self.moreBarButton.setContent(.more(MoreHeaderButton.optionsCircleImage(color: self.presentationData.theme.rootController.navigationBar.buttonColor)))
         self.moreInfoNavigationButton = ChatNavigationButton(action: .toggleInfoPanel, buttonItem: UIBarButtonItem(customDisplayNode: self.moreBarButton)!)
+
+        if case let .peer(peerId) = self.chatLocation, peerId.namespace == Namespaces.Peer.CloudUser, peerId != self.context.account.peerId {
+            let outerSize: CGFloat = 44.0
+            let innerSize: CGFloat = 24.0
+            let circleButton = UIButton(type: .custom)
+            circleButton.frame = CGRect(x: 0, y: 0, width: outerSize, height: outerSize)
+
+            let innerCircle = UIView(frame: CGRect(
+                x: (outerSize - innerSize) / 2.0,
+                y: (outerSize - innerSize) / 2.0,
+                width: innerSize,
+                height: innerSize
+            ))
+            innerCircle.backgroundColor = UIColor(rgb: 0x05614C)
+            innerCircle.layer.cornerRadius = innerSize / 2.0
+            innerCircle.isUserInteractionEnabled = false
+            circleButton.addSubview(innerCircle)
+
+            circleButton.layer.cornerRadius = outerSize / 2.0
+            circleButton.layer.borderWidth = 2.0
+            circleButton.layer.borderColor = self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.cgColor
+            circleButton.clipsToBounds = true
+
+            circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonAction), for: .touchUpInside)
+            circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonTouchDown), for: [.touchDown, .touchDragEnter])
+            circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
+            circleButton.tag = 9999
+            self.mediaBrowserCircleButton = circleButton
+        }
         self.moreBarButton.contextAction = { [weak self] sourceNode, gesture in
             guard let self else {
                 return
@@ -7972,8 +8003,19 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     override public func containerLayoutUpdated(_ layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         self.suspendNavigationBarLayout = true
         super.containerLayoutUpdated(layout, transition: transition)
-        
+
         self.validLayout = layout
+
+        if let circleButton = self.mediaBrowserCircleButton, let avatarNode = self.avatarNode, let navBar = self.navigationBar {
+            if circleButton.superview == nil {
+                navBar.view.addSubview(circleButton)
+            }
+            self.repositionMediaBrowserCircleButton(circleButton: circleButton, avatarNode: avatarNode, navBar: navBar)
+            DispatchQueue.main.async { [weak self, weak circleButton, weak avatarNode, weak navBar] in
+                guard let self = self, let circleButton = circleButton, let avatarNode = avatarNode, let navBar = navBar else { return }
+                self.repositionMediaBrowserCircleButton(circleButton: circleButton, avatarNode: avatarNode, navBar: navBar)
+            }
+        }
         
         switch self.presentationInterfaceState.mode {
         case .standard, .inline:
@@ -8113,6 +8155,53 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
     
+    private func repositionMediaBrowserCircleButton(circleButton: UIButton, avatarNode: ChatAvatarNavigationNode, navBar: NavigationBar) {
+        let avatarFrame = avatarNode.view.convert(avatarNode.bounds, to: navBar.view)
+        let spacing: CGFloat = 4.0
+        let outerSize: CGFloat = 44.0
+        circleButton.frame = CGRect(
+            x: avatarFrame.minX - outerSize - spacing,
+            y: avatarFrame.midY - outerSize / 2.0,
+            width: outerSize,
+            height: outerSize
+        )
+    }
+
+    @objc func mediaBrowserButtonAction() {
+        self.navigationButtonAction(.openMediaBrowser)
+    }
+
+    @objc func mediaBrowserButtonTouchDown() {
+        if let circleButton = self.mediaBrowserCircleButton {
+            let scale: CGFloat = 0.8
+            let animation = CABasicAnimation(keyPath: "transform.scale")
+            animation.fromValue = circleButton.layer.presentation()?.value(forKeyPath: "transform.scale") ?? 1.0
+            animation.toValue = scale
+            animation.duration = 0.2
+            animation.fillMode = .forwards
+            animation.isRemovedOnCompletion = false
+            animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+            circleButton.layer.removeAnimation(forKey: "scaleAnimation")
+            circleButton.layer.add(animation, forKey: "scaleAnimation")
+        }
+    }
+
+    @objc func mediaBrowserButtonTouchUp() {
+        if let circleButton = self.mediaBrowserCircleButton {
+            let animation = CASpringAnimation(keyPath: "transform.scale")
+            animation.fromValue = circleButton.layer.presentation()?.value(forKeyPath: "transform.scale") ?? 0.8
+            animation.toValue = 1.0
+            animation.damping = 10.0
+            animation.stiffness = 300.0
+            animation.mass = 0.8
+            animation.duration = animation.settlingDuration
+            animation.fillMode = .forwards
+            animation.isRemovedOnCompletion = true
+            circleButton.layer.removeAnimation(forKey: "scaleAnimation")
+            circleButton.layer.add(animation, forKey: "scaleAnimation")
+        }
+    }
+
     @objc func secondaryRightNavigationButtonAction() {
         if let button = self.secondaryRightNavigationButton {
             self.navigationButtonAction(button.action)
