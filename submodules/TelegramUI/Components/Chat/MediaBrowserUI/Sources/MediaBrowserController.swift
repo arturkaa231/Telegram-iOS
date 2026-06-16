@@ -223,7 +223,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         let onTVSessionsStore: OnTVSessionsStore
         if let endpoint = syncConfiguration.endpoint {
             NSLog("[MultigramOnTV] Using synced store endpoint=%@ peerId=%lld accountPeerId=%lld", endpoint.absoluteString, peerId.toInt64(), context.account.peerId.toInt64())
-            let syncTokenService = Self.syncTokenService(configuration: syncConfiguration)
+            let syncTokenService = Self.syncTokenService(configuration: syncConfiguration, accountPeerId: context.account.peerId)
             onTVSessionsStore = SyncedOnTVSessionsStore(
                 peerId: peerId,
                 accountPeerId: context.account.peerId,
@@ -304,9 +304,10 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
         self.playerNode.onPulseChanged = { [weak self] isOn in
             guard let self = self else { return }
+            let displayedItem = self.currentPulseItem()
             self.onTVSessionCoordinator.handlePulseChanged(
                 isOn,
-                displayedItem: self.playerNode.displayedItem,
+                displayedItem: displayedItem,
                 position: self.playerNode.currentPlaybackPosition(),
                 progress: self.playerNode.currentPlaybackProgress()
             )
@@ -329,19 +330,14 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private static let defaultDevelopmentOnTVSyncEndpoint = "http://127.0.0.1:4010"
     private static let defaultDevelopmentOnTVSyncToken = "dev-local-token"
     private static let defaultProductionOnTVSyncEndpoint = "https://multigram-sync-layer.onrender.com"
-    private static let defaultTelegramLoginClientId = "8908892975"
-    private static let defaultTelegramLoginRedirectURI = "multigram://tglogin"
 
-    private static func onTVSyncConfiguration() -> (endpoint: URL?, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?) {
+    private static func onTVSyncConfiguration() -> (endpoint: URL?, authToken: String?) {
         let endpointKeys = ["MultigramOnTVSyncEndpoint", "PlayGramOnTVSyncEndpoint"]
         let tokenKeys = ["MultigramOnTVSyncToken", "PlayGramOnTVSyncToken"]
-        let telegramClientIdKeys = ["MultigramTelegramLoginClientId", "PlayGramTelegramLoginClientId"]
-        let telegramRedirectURIKeys = ["MultigramTelegramLoginRedirectURI", "PlayGramTelegramLoginRedirectURI"]
         let arguments = ProcessInfo.processInfo.arguments
         var didUpdateDefaults = false
         var launchAuthToken: String?
         var didPassAuthTokenArgument = false
-        var didPassTelegramLoginArgument = false
 
         for key in endpointKeys {
             if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
@@ -365,73 +361,50 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                 didUpdateDefaults = true
             }
         }
-        for key in telegramClientIdKeys {
-            if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
-                UserDefaults.standard.set(value, forKey: "MultigramTelegramLoginClientId")
-                UserDefaults.standard.set(value, forKey: "PlayGramTelegramLoginClientId")
-                didPassTelegramLoginArgument = true
-                didUpdateDefaults = true
-            }
-        }
-        for key in telegramRedirectURIKeys {
-            if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
-                UserDefaults.standard.set(value, forKey: "MultigramTelegramLoginRedirectURI")
-                UserDefaults.standard.set(value, forKey: "PlayGramTelegramLoginRedirectURI")
-                didPassTelegramLoginArgument = true
-                didUpdateDefaults = true
-            }
-        }
         if didUpdateDefaults {
             UserDefaults.standard.synchronize()
         }
 
         let endpointString = endpointKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
         let storedAuthToken = tokenKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
-        let authToken = didPassAuthTokenArgument ? launchAuthToken : (didPassTelegramLoginArgument ? nil : storedAuthToken)
-        let telegramLoginClientId = telegramClientIdKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
-        let telegramLoginRedirectURI = telegramRedirectURIKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
+        let authToken = didPassAuthTokenArgument ? launchAuthToken : storedAuthToken
         if let endpointString = endpointString, let endpoint = URL(string: endpointString) {
-            NSLog("[MultigramOnTV] Sync configuration endpoint=%@ tokenPresent=%@ telegramLogin=%@", endpointString, authToken == nil ? "false" : "true", telegramLoginClientId == nil ? "false" : "true")
-            return (endpoint, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+            NSLog("[MultigramOnTV] Sync configuration endpoint=%@ tokenPresent=%@", endpointString, authToken == nil ? "false" : "true")
+            return (endpoint, authToken)
         }
 
-        if let defaultConfiguration = Self.defaultOnTVSyncConfiguration(authToken: authToken, telegramLoginClientId: telegramLoginClientId ?? Self.defaultTelegramLoginClientId, telegramLoginRedirectURI: telegramLoginRedirectURI ?? Self.defaultTelegramLoginRedirectURI) {
-            NSLog("[MultigramOnTV] Sync configuration default endpoint=%@ tokenPresent=%@ telegramLogin=%@", defaultConfiguration.endpoint.absoluteString, defaultConfiguration.authToken == nil ? "false" : "true", defaultConfiguration.telegramLoginClientId == nil ? "false" : "true")
+        if let defaultConfiguration = Self.defaultOnTVSyncConfiguration(authToken: authToken) {
+            NSLog("[MultigramOnTV] Sync configuration default endpoint=%@ tokenPresent=%@", defaultConfiguration.endpoint.absoluteString, defaultConfiguration.authToken == nil ? "false" : "true")
             return defaultConfiguration
         }
 
         NSLog("[MultigramOnTV] Sync configuration missing endpoint tokenPresent=%@", authToken == nil ? "false" : "true")
-        return (nil, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+        return (nil, authToken)
     }
 
-    private static func defaultOnTVSyncConfiguration(authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?) -> (endpoint: URL, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?)? {
+    private static func defaultOnTVSyncConfiguration(authToken: String?) -> (endpoint: URL, authToken: String?)? {
         #if DEBUG
         guard ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] != nil,
               let endpoint = URL(string: Self.defaultDevelopmentOnTVSyncEndpoint) else {
             return nil
         }
-        return (endpoint, authToken ?? Self.defaultDevelopmentOnTVSyncToken, nil, nil)
+        return (endpoint, authToken ?? Self.defaultDevelopmentOnTVSyncToken)
         #else
         guard let endpoint = URL(string: Self.defaultProductionOnTVSyncEndpoint) else {
             return nil
         }
-        return (endpoint, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+        return (endpoint, authToken)
         #endif
     }
 
-    private static func syncTokenService(configuration: (endpoint: URL?, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?)) -> OnTVSyncTokenService? {
+    private static func syncTokenService(configuration: (endpoint: URL?, authToken: String?), accountPeerId: EnginePeer.Id) -> OnTVSyncTokenService? {
         guard
             configuration.authToken == nil,
-            let endpoint = configuration.endpoint,
-            let clientId = configuration.telegramLoginClientId,
-            let redirectURI = configuration.telegramLoginRedirectURI,
-            !clientId.isEmpty,
-            !redirectURI.isEmpty
+            let endpoint = configuration.endpoint
         else {
             return nil
         }
-        let identityProvider = OnTVTelegramLoginIdentityProvider(clientId: clientId, redirectURI: redirectURI)
-        return OnTVSyncTokenService(syncEndpoint: endpoint, identityProvider: identityProvider)
+        return OnTVSyncTokenService(syncEndpoint: endpoint, telegramUserId: String(accountPeerId.toInt64()))
     }
 
     private static func launchArgumentValue(named name: String, arguments: [String]) -> String? {
@@ -456,6 +429,26 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private static func shouldClearLaunchValue(_ value: String) -> Bool {
         let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return normalized == "__clear__" || normalized == "none" || normalized == "null"
+    }
+
+    private func currentPulseItem() -> MediaBrowserItem? {
+        if let displayedItem = self.playerNode.displayedItem {
+            return displayedItem
+        }
+        if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < self.loadedItems.count {
+            let item = self.loadedItems[currentItemIndex]
+            self.playerNode.showItem(item)
+            self.listNode.setSelectedItemIndex(currentItemIndex)
+            return item
+        }
+        if let firstItem = self.loadedItems.first {
+            self.currentItemIndex = 0
+            self.playerNode.showItem(firstItem)
+            self.listNode.setSelectedItemIndex(0)
+            return firstItem
+        }
+        self.onTVListNode.showNotice("Сначала выбери файл")
+        return nil
     }
 
     private func navigateNeighbor(_ offset: Int) {

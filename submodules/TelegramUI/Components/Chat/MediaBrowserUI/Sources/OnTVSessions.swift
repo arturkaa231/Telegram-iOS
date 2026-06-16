@@ -469,7 +469,7 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     var onNeedsMoreMediaItems: (() -> Void)?
     var onStateConflict: (() -> Void)?
     var isReady: Bool {
-        return self.transport.isReady
+        return true
     }
 
     init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id, transport: OnTVSessionsTransport) {
