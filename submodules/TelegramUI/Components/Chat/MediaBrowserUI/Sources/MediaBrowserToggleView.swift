@@ -5,7 +5,7 @@ final class MediaBrowserToggleView: UIControl {
     private let trackView = UIView()
     private let thumbView = UIView()
 
-    private(set) var isOn: Bool = true
+    private(set) var isOn: Bool = false
 
     var trackColorOn: UIColor = .systemGreen {
         didSet { self.updateColors() }
@@ -24,6 +24,10 @@ final class MediaBrowserToggleView: UIControl {
         self.thumbView.backgroundColor = self.thumbColor
         self.addSubview(self.trackView)
         self.addSubview(self.thumbView)
+        self.isAccessibilityElement = true
+        self.accessibilityTraits = [.button]
+        self.accessibilityLabel = "Пульт"
+        self.accessibilityValue = "Выключен"
         self.updateColors()
         self.setNeedsLayout()
         self.addTarget(self, action: #selector(self.tapped), for: .touchUpInside)
@@ -40,6 +44,7 @@ final class MediaBrowserToggleView: UIControl {
     func setOn(_ value: Bool, animated: Bool) {
         guard self.isOn != value else { return }
         self.isOn = value
+        self.accessibilityValue = value ? "Включён" : "Выключен"
         let apply = {
             self.layoutThumb()
             self.updateColors()

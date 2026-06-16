@@ -3,6 +3,7 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import AccountContext
+import TelegramCore
 import TelegramPresentationData
 
 final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableViewDelegate {
@@ -274,6 +275,10 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         self.tableView.reloadData()
     }
 
+    func setEmptyText(_ text: String) {
+        self.emptyLabel.text = text
+    }
+
     func updateItems(_ items: [MediaBrowserItem]) {
         self.items = items
         self.emptyLabel.isHidden = !items.isEmpty || loadingState == .loading
@@ -338,5 +343,459 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         if contentHeight > 0 && offsetY > contentHeight - frameHeight * 1.25 {
             self.onNearEnd?()
         }
+    }
+}
+
+private enum OnTVSessionListEntry {
+    case resolved(OnTVPlaybackContext)
+    case unresolved(OnTVRemotePlaybackContext)
+
+    var sessionId: String {
+        switch self {
+        case let .resolved(session):
+            return session.sessionId
+        case let .unresolved(session):
+            return session.sessionId
+        }
+    }
+}
+
+final class OnTVSessionsListNode: ASDisplayNode, UITableViewDataSource, UITableViewDelegate {
+    private var presentationData: PresentationData
+    private let accountPeerId: EnginePeer.Id
+    private let tableView: UITableView
+    private let emptyLabel: UILabel
+    private let loadingIndicator: UIActivityIndicatorView
+    private let noticeLabel: UILabel
+    private var sessions: [OnTVPlaybackContext] = []
+    private var unresolvedSessions: [OnTVRemotePlaybackContext] = []
+    private var entries: [OnTVSessionListEntry] = []
+    private var isResolvingSessions: Bool = false
+    private var activeSessionId: String?
+
+    var onSessionSelected: ((OnTVPlaybackContext) -> Void)?
+
+    init(presentationData: PresentationData, accountPeerId: EnginePeer.Id) {
+        self.presentationData = presentationData
+        self.accountPeerId = accountPeerId
+        self.tableView = UITableView(frame: .zero, style: .plain)
+        self.tableView.separatorStyle = .none
+        self.tableView.backgroundColor = .clear
+        self.tableView.rowHeight = 104.0
+
+        self.emptyLabel = UILabel()
+        self.emptyLabel.text = "Нет сессий"
+        self.emptyLabel.textAlignment = .center
+        self.emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
+        self.emptyLabel.font = UIFont.systemFont(ofSize: 16.0)
+        self.emptyLabel.isHidden = true
+
+        self.loadingIndicator = UIActivityIndicatorView(style: .medium)
+        self.loadingIndicator.hidesWhenStopped = true
+
+        self.noticeLabel = UILabel()
+        self.noticeLabel.textAlignment = .center
+        self.noticeLabel.textColor = .white
+        self.noticeLabel.font = UIFont.systemFont(ofSize: 13.0, weight: .semibold)
+        self.noticeLabel.backgroundColor = UIColor(rgb: 0xFF383C).withAlphaComponent(0.92)
+        self.noticeLabel.layer.cornerRadius = 14.0
+        self.noticeLabel.clipsToBounds = true
+        self.noticeLabel.alpha = 0.0
+        self.noticeLabel.isHidden = true
+
+        super.init()
+
+        self.backgroundColor = presentationData.theme.list.plainBackgroundColor
+    }
+
+    override func didLoad() {
+        super.didLoad()
+
+        self.tableView.dataSource = self
+        self.tableView.delegate = self
+        self.tableView.register(OnTVSessionCell.self, forCellReuseIdentifier: OnTVSessionCell.reuseIdentifier)
+
+        self.view.addSubview(self.tableView)
+        self.view.addSubview(self.emptyLabel)
+        self.view.addSubview(self.loadingIndicator)
+        self.view.addSubview(self.noticeLabel)
+    }
+
+    func updatePresentationData(_ presentationData: PresentationData) {
+        self.presentationData = presentationData
+        self.backgroundColor = presentationData.theme.list.plainBackgroundColor
+        self.emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
+        self.tableView.reloadData()
+    }
+
+    func showNotice(_ text: String) {
+        self.noticeLabel.text = text
+        self.noticeLabel.isHidden = false
+        self.noticeLabel.alpha = 0.0
+        UIView.animate(withDuration: 0.18, animations: {
+            self.noticeLabel.alpha = 1.0
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.24, delay: 1.3, options: [], animations: {
+                self.noticeLabel.alpha = 0.0
+            }, completion: { _ in
+                self.noticeLabel.isHidden = true
+            })
+        })
+    }
+
+    func updateSessions(_ sessions: [OnTVPlaybackContext]) {
+        self.sessions = sessions
+        self.rebuildEntries()
+        self.updateEmptyState()
+        self.tableView.reloadData()
+    }
+
+    func updateUnresolvedSessions(_ sessions: [OnTVRemotePlaybackContext]) {
+        self.unresolvedSessions = sessions
+        self.rebuildEntries()
+        self.updateEmptyState()
+        self.tableView.reloadData()
+    }
+
+    func updateActiveSessionId(_ sessionId: String?) {
+        guard self.activeSessionId != sessionId else { return }
+        self.activeSessionId = sessionId
+        self.tableView.reloadData()
+    }
+
+    func updateResolvingSessions(_ isResolving: Bool) {
+        self.isResolvingSessions = isResolving
+        self.updateEmptyState()
+    }
+
+    func updateLayout(size: CGSize, transition: ContainedViewLayoutTransition) {
+        self.tableView.frame = CGRect(origin: .zero, size: size)
+        let emptyY = size.height / 3.0
+        self.emptyLabel.frame = CGRect(x: 0.0, y: emptyY, width: size.width, height: 40.0)
+        self.loadingIndicator.frame = CGRect(x: (size.width - 28.0) / 2.0, y: emptyY - 34.0, width: 28.0, height: 28.0)
+        let noticeWidth = max(0.0, min(180.0, size.width - 24.0))
+        self.noticeLabel.frame = CGRect(x: (size.width - noticeWidth) / 2.0, y: 10.0, width: noticeWidth, height: 28.0)
+        self.tableView.contentInset = UIEdgeInsets(top: 8.0, left: 0.0, bottom: 16.0, right: 0.0)
+        self.tableView.scrollIndicatorInsets = self.tableView.contentInset
+    }
+
+    private func updateEmptyState() {
+        let shouldShowResolving = self.entries.isEmpty && self.isResolvingSessions
+        let shouldShowEmpty = self.entries.isEmpty
+        self.emptyLabel.text = shouldShowResolving ? "Загружаем сессии" : "Нет сессий"
+        self.emptyLabel.isHidden = !shouldShowEmpty
+        if shouldShowResolving {
+            self.loadingIndicator.startAnimating()
+        } else {
+            self.loadingIndicator.stopAnimating()
+        }
+    }
+
+    func flashLockedSession(_ sessionId: String) {
+        guard let index = self.entries.firstIndex(where: { $0.sessionId == sessionId }) else { return }
+        guard let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? OnTVSessionCell else { return }
+        cell.flashLockedStripe()
+    }
+
+    func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        return self.entries.count
+    }
+
+    func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: OnTVSessionCell.reuseIdentifier, for: indexPath) as! OnTVSessionCell
+        switch self.entries[indexPath.row] {
+        case let .resolved(session):
+            cell.configure(with: session, accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId, presentationData: self.presentationData)
+        case let .unresolved(session):
+            cell.configureUnresolved(with: session, accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId, presentationData: self.presentationData)
+        }
+        let sessionId = self.entries[indexPath.row].sessionId
+        cell.onTap = { [weak self] in
+            self?.selectEntry(sessionId: sessionId)
+        }
+        return cell
+    }
+
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        guard indexPath.row < self.entries.count else {
+            return
+        }
+        self.selectEntry(sessionId: self.entries[indexPath.row].sessionId)
+    }
+
+    private func selectEntry(sessionId: String) {
+        guard let entry = self.entries.first(where: { $0.sessionId == sessionId }) else {
+            return
+        }
+        switch entry {
+        case let .resolved(session):
+            if session.visualStatus(accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId) == .locked {
+                self.flashLockedSession(session.sessionId)
+                return
+            }
+            self.onSessionSelected?(session)
+        case let .unresolved(session):
+            if session.visualStatus(accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId) == .locked {
+                self.flashLockedSession(session.sessionId)
+                return
+            }
+            self.showNotice("Ищем файл локально")
+        }
+    }
+
+    private func rebuildEntries() {
+        let resolvedIds = Set(self.sessions.map { $0.sessionId })
+        self.entries = self.sessions.map(OnTVSessionListEntry.resolved)
+        self.entries.append(contentsOf: self.unresolvedSessions.filter { !resolvedIds.contains($0.sessionId) }.map(OnTVSessionListEntry.unresolved))
+    }
+}
+
+final class OnTVSessionCell: UITableViewCell {
+    static let reuseIdentifier = "OnTVSessionCell"
+
+    private let cardView = UIView()
+    private let stripeView = UIView()
+    private let thumbnailView = UIView()
+    private let iconView = UIImageView()
+    private let titleLabel = UILabel()
+    private let metaLabel = UILabel()
+    private let statusLabel = UILabel()
+    private let participantsLabel = UILabel()
+    private let positionLabel = UILabel()
+    private let progressTrack = UIView()
+    private let progressFill = UIView()
+    private let tapButton = UIButton(type: .custom)
+    var onTap: (() -> Void)?
+
+    override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+        super.init(style: style, reuseIdentifier: reuseIdentifier)
+
+        self.selectionStyle = .default
+        self.backgroundColor = .clear
+        self.isAccessibilityElement = true
+        self.accessibilityTraits = [.button]
+
+        self.cardView.layer.cornerRadius = 12.0
+        self.cardView.clipsToBounds = true
+        self.cardView.isUserInteractionEnabled = false
+
+        self.thumbnailView.layer.cornerRadius = 16.0
+        self.thumbnailView.clipsToBounds = true
+        self.thumbnailView.isUserInteractionEnabled = false
+
+        self.iconView.contentMode = .center
+        self.iconView.isUserInteractionEnabled = false
+
+        self.titleLabel.font = UIFont.systemFont(ofSize: 16.0, weight: .semibold)
+        self.titleLabel.numberOfLines = 1
+        self.titleLabel.lineBreakMode = .byTruncatingTail
+        self.titleLabel.isUserInteractionEnabled = false
+
+        self.metaLabel.font = UIFont.systemFont(ofSize: 13.0, weight: .regular)
+        self.metaLabel.numberOfLines = 1
+        self.metaLabel.lineBreakMode = .byTruncatingTail
+        self.metaLabel.isUserInteractionEnabled = false
+
+        self.statusLabel.font = UIFont.systemFont(ofSize: 11.0, weight: .bold)
+        self.statusLabel.textAlignment = .center
+        self.statusLabel.layer.cornerRadius = 10.0
+        self.statusLabel.clipsToBounds = true
+        self.statusLabel.isUserInteractionEnabled = false
+
+        self.participantsLabel.font = UIFont.systemFont(ofSize: 13.0, weight: .medium)
+        self.participantsLabel.textAlignment = .right
+        self.participantsLabel.isUserInteractionEnabled = false
+        self.participantsLabel.isHidden = true
+
+        self.positionLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12.0, weight: .regular)
+        self.positionLabel.textAlignment = .right
+        self.positionLabel.adjustsFontSizeToFitWidth = true
+        self.positionLabel.minimumScaleFactor = 0.78
+        self.positionLabel.lineBreakMode = .byClipping
+        self.positionLabel.isUserInteractionEnabled = false
+
+        self.progressTrack.layer.cornerRadius = 2.0
+        self.progressTrack.clipsToBounds = true
+        self.progressTrack.isUserInteractionEnabled = false
+        self.progressFill.isUserInteractionEnabled = false
+
+        self.contentView.addSubview(self.cardView)
+        self.cardView.addSubview(self.stripeView)
+        self.cardView.addSubview(self.thumbnailView)
+        self.thumbnailView.addSubview(self.iconView)
+        self.cardView.addSubview(self.titleLabel)
+        self.cardView.addSubview(self.metaLabel)
+        self.cardView.addSubview(self.statusLabel)
+        self.cardView.addSubview(self.participantsLabel)
+        self.cardView.addSubview(self.positionLabel)
+        self.cardView.addSubview(self.progressTrack)
+        self.progressTrack.addSubview(self.progressFill)
+
+        self.tapButton.backgroundColor = .clear
+        self.tapButton.addTarget(self, action: #selector(self.tapped), for: .touchUpInside)
+        self.contentView.addSubview(self.tapButton)
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func prepareForReuse() {
+        super.prepareForReuse()
+        self.onTap = nil
+    }
+
+    @objc private func tapped() {
+        self.onTap?()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        let bounds = self.contentView.bounds
+        self.cardView.frame = CGRect(x: 12.0, y: 6.0, width: bounds.width - 24.0, height: bounds.height - 12.0)
+        let cardBounds = self.cardView.bounds
+        self.stripeView.frame = CGRect(x: 0.0, y: 0.0, width: 4.0, height: cardBounds.height)
+
+        let thumbSize: CGFloat = 56.0
+        self.thumbnailView.frame = CGRect(x: 16.0, y: 16.0, width: thumbSize, height: thumbSize)
+        self.iconView.frame = self.thumbnailView.bounds
+
+        let statusSize = self.statusLabel.sizeThatFits(CGSize(width: 90.0, height: 20.0))
+        let statusWidth = max(52.0, statusSize.width + 16.0)
+        self.statusLabel.frame = CGRect(x: cardBounds.width - statusWidth - 14.0, y: 14.0, width: statusWidth, height: 20.0)
+
+        let rightColumnWidth: CGFloat = 104.0
+        self.participantsLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 40.0, width: rightColumnWidth, height: 18.0)
+        self.positionLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 60.0, width: rightColumnWidth, height: 18.0)
+
+        let textLeft = self.thumbnailView.frame.maxX + 12.0
+        let textRight = min(self.statusLabel.frame.minX - 10.0, self.participantsLabel.frame.minX - 10.0)
+        let textWidth = max(44.0, textRight - textLeft)
+        self.titleLabel.frame = CGRect(x: textLeft, y: 17.0, width: textWidth, height: 22.0)
+        self.metaLabel.frame = CGRect(x: textLeft, y: 43.0, width: textWidth, height: 18.0)
+
+        let progressX = textLeft
+        let progressY: CGFloat = cardBounds.height - 18.0
+        let progressWidth = max(44.0, cardBounds.width - progressX - 14.0)
+        self.progressTrack.frame = CGRect(x: progressX, y: progressY, width: progressWidth, height: 4.0)
+        let progress = max(0.0, min(1.0, self.progressValue))
+        self.progressFill.frame = CGRect(x: 0.0, y: 0.0, width: progressWidth * progress, height: 4.0)
+        self.tapButton.frame = bounds
+        self.contentView.bringSubviewToFront(self.tapButton)
+    }
+
+    private var progressValue: CGFloat = 0.0
+
+    func configure(with session: OnTVPlaybackContext, accountPeerId: EnginePeer.Id, activeSessionId: String?, presentationData: PresentationData) {
+        let visualStatus = session.visualStatus(accountPeerId: accountPeerId, activeSessionId: activeSessionId)
+
+        self.configureCommon(
+            title: session.item.fileName.isEmpty ? "Без названия" : session.item.fileName,
+            meta: "\(session.item.senderName) · \(mediaBrowserDateString(session.item.timestamp, locale: Locale(identifier: presentationData.strings.baseLanguageCode)))",
+            position: session.position,
+            progress: session.progress,
+            participantCount: session.participantCount,
+            visualStatus: visualStatus,
+            presentationData: presentationData
+        )
+    }
+
+    func configureUnresolved(with session: OnTVRemotePlaybackContext, accountPeerId: EnginePeer.Id, activeSessionId: String?, presentationData: PresentationData) {
+        let visualStatus = session.visualStatus(accountPeerId: accountPeerId, activeSessionId: activeSessionId)
+        let title: String
+        if let fileName = session.fileName, !fileName.isEmpty {
+            title = fileName
+        } else {
+            title = "Сессия на телике"
+        }
+
+        self.configureCommon(
+            title: title,
+            meta: "Ищем файл локально",
+            position: session.position,
+            progress: session.progress,
+            participantCount: session.participantCount,
+            visualStatus: visualStatus,
+            presentationData: presentationData
+        )
+    }
+
+    private func configureCommon(title: String, meta: String, position: Double, progress: CGFloat, participantCount: Int, visualStatus: OnTVCardVisualStatus, presentationData: PresentationData) {
+        let theme = presentationData.theme
+
+        self.cardView.backgroundColor = theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.68)
+        self.titleLabel.textColor = theme.list.itemPrimaryTextColor
+        self.metaLabel.textColor = theme.list.itemSecondaryTextColor
+        self.participantsLabel.textColor = theme.list.itemSecondaryTextColor
+        self.positionLabel.textColor = theme.list.itemSecondaryTextColor
+        self.progressTrack.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
+
+        self.titleLabel.text = title
+        self.metaLabel.text = meta
+        self.participantsLabel.text = ""
+        self.participantsLabel.isHidden = true
+        self.positionLabel.text = Self.elapsedRemainingString(position: position, progress: progress)
+        self.progressValue = progress
+
+        let iconName: String
+        let statusText: String
+        let statusColor: UIColor
+        switch visualStatus {
+        case .live:
+            iconName = "play.fill"
+            statusText = "LIVE"
+            statusColor = UIColor(rgb: 0x2DA547)
+        case .ended:
+            iconName = "clock.fill"
+            statusText = "ENDED"
+            statusColor = UIColor(rgb: 0x8E8E93)
+        case .locked:
+            iconName = "lock.fill"
+            statusText = "LOCKED"
+            statusColor = UIColor(rgb: 0x05614C)
+        }
+
+        self.statusLabel.text = statusText
+        self.statusLabel.textColor = .white
+        self.statusLabel.backgroundColor = statusColor
+        self.stripeView.backgroundColor = statusColor
+        self.progressFill.backgroundColor = statusColor
+        self.thumbnailView.backgroundColor = statusColor.withAlphaComponent(0.16)
+        self.iconView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .semibold))
+        self.iconView.tintColor = statusColor
+        self.accessibilityLabel = "\(statusText), \(title), \(meta), \(self.positionLabel.text ?? "")"
+
+        self.setNeedsLayout()
+    }
+
+    func flashLockedStripe() {
+        let oldColor = self.stripeView.backgroundColor
+        UIView.animate(withDuration: 0.1, animations: {
+            self.stripeView.backgroundColor = UIColor(rgb: 0xFF383C)
+        }, completion: { _ in
+            UIView.animate(withDuration: 0.25) {
+                self.stripeView.backgroundColor = oldColor
+            }
+        })
+    }
+
+    private static func formatTime(_ seconds: Double) -> String {
+        let total = Int(max(0.0, seconds.rounded()))
+        return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    private static func elapsedRemainingString(position: Double, progress: CGFloat) -> String {
+        let elapsed = max(0.0, position)
+        let normalizedProgress = max(0.0, min(1.0, Double(progress)))
+        guard normalizedProgress > 0.001 else {
+            return Self.formatTime(elapsed)
+        }
+        let duration = elapsed / normalizedProgress
+        guard duration.isFinite, duration > elapsed else {
+            return Self.formatTime(elapsed)
+        }
+        return "\(Self.formatTime(elapsed)) / -\(Self.formatTime(duration - elapsed))"
     }
 }

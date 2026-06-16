@@ -26,8 +26,6 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private let muteBackgroundView: UIView
     private let toggleSwitch: MediaBrowserToggleView
 
-    private let avatarBackView: UIView
-    private let avatarFrontView: UIView
     private let participantsCountLabel: UILabel
     private let block3TimeLabel: UILabel
 
@@ -66,14 +64,20 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     var onDeleteMessage: ((MediaBrowserItem) -> Void)?
     var onPrevItem: (() -> Void)?
     var onNextItem: (() -> Void)?
+    var onPulseChanged: ((Bool) -> Void)?
+    var onPlaybackStatusChanged: ((MediaPreviewPlaybackStatus) -> Void)?
+    var onSeekRequested: ((Double, CGFloat) -> Void)?
+    var onPlaybackPositionUpdated: ((Double, CGFloat, Bool) -> Void)?
 
     private var isMuted: Bool = false
     private var isPlaying: Bool = false
     private var isExpanded: Bool = false
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
+    private let remoteSeekTolerance: Double = 1.5
 
     private var currentItem: MediaBrowserItem?
+    private var suppressPulseCallback: Bool = false
 
     var onToggleExpanded: (() -> Void)?
 
@@ -91,6 +95,8 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.fileNameLabel.font = UIFont.systemFont(ofSize: 28.0, weight: .regular)
         self.fileNameLabel.numberOfLines = 1
         self.fileNameLabel.lineBreakMode = .byTruncatingTail
+        self.fileNameLabel.adjustsFontSizeToFitWidth = true
+        self.fileNameLabel.minimumScaleFactor = 0.78
 
         self.dateLabel = UILabel()
         self.dateLabel.font = UIFont.systemFont(ofSize: 15.0, weight: .regular)
@@ -106,14 +112,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.muteButton.contentMode = .center
 
         self.toggleSwitch = MediaBrowserToggleView()
-        self.toggleSwitch.setOn(true, animated: false)
-
-        self.avatarBackView = UIView()
-        self.avatarBackView.layer.cornerRadius = 10.0
-
-        self.avatarFrontView = UIView()
-        self.avatarFrontView.layer.cornerRadius = 10.0
-        self.avatarFrontView.layer.borderWidth = 1.5
+        self.toggleSwitch.setOn(false, animated: false)
 
         self.participantsCountLabel = UILabel()
         self.participantsCountLabel.font = UIFont.systemFont(ofSize: 15.0, weight: .regular)
@@ -121,6 +120,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.block3TimeLabel = UILabel()
         self.block3TimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 14.0, weight: .regular)
         self.block3TimeLabel.textAlignment = .right
+        self.block3TimeLabel.adjustsFontSizeToFitWidth = true
+        self.block3TimeLabel.minimumScaleFactor = 0.82
+        self.block3TimeLabel.lineBreakMode = .byClipping
         self.block3TimeLabel.isHidden = true
 
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
@@ -201,6 +203,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.expandElapsedLabel = UILabel()
         self.expandElapsedLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12.0, weight: .regular)
         self.expandElapsedLabel.text = "00:00"
+        self.expandElapsedLabel.adjustsFontSizeToFitWidth = true
+        self.expandElapsedLabel.minimumScaleFactor = 0.82
+        self.expandElapsedLabel.lineBreakMode = .byClipping
         self.expandElapsedLabel.isHidden = true
 
         self.expandRemainingLabel = UILabel()
@@ -257,8 +262,6 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         host.addSubview(self.muteBackgroundView)
         host.addSubview(self.muteButton)
         host.addSubview(self.toggleSwitch)
-        host.addSubview(self.avatarBackView)
-        host.addSubview(self.avatarFrontView)
         host.addSubview(self.participantsCountLabel)
         host.addSubview(self.block3TimeLabel)
         host.addSubview(self.nightModeButton)
@@ -294,10 +297,10 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.toggleSwitch.addTarget(self, action: #selector(pulseTogglecChanged), for: .valueChanged)
 
         self.expandScrubbingNode.seek = { [weak self] timestamp in
-            self?.previewNode?.seek(to: timestamp)
+            self?.seekPreview(to: timestamp, report: true)
         }
         self.fitScrubbingNode.seek = { [weak self] timestamp in
-            self?.previewNode?.seek(to: timestamp)
+            self?.seekPreview(to: timestamp, report: true)
         }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(previewAreaTapped))
@@ -320,7 +323,6 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let list = theme.list
         let themePrimary = list.itemPrimaryTextColor
         let themeSecondary = list.itemSecondaryTextColor
-        let accent = list.itemSwitchColors.positiveColor
         let cardBg = list.itemBlocksBackgroundColor
         let overlay = self.isExpanded
 
@@ -345,10 +347,6 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.toggleSwitch.trackColorOff = list.itemSwitchColors.frameColor
         self.toggleSwitch.thumbColor = .white
 
-        let avatarBg = chromeSecondary.withAlphaComponent(0.35)
-        self.avatarBackView.backgroundColor = avatarBg
-        self.avatarFrontView.backgroundColor = avatarBg
-        self.avatarFrontView.layer.borderColor = accent.cgColor
         self.participantsCountLabel.textColor = chromePrimary
 
         for button in [self.nightModeButton, self.expandButton, self.fitButton, self.listButton] {
@@ -379,7 +377,44 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.loadingIndicator.color = chromePrimary
     }
 
-    func showItem(_ item: MediaBrowserItem) {
+    var displayedItem: MediaBrowserItem? {
+        return self.currentItem
+    }
+
+    func currentPlaybackPosition() -> Double {
+        return max(0.0, self.expandStatusValue?.timestamp ?? 0.0)
+    }
+
+    func currentPlaybackProgress() -> CGFloat {
+        guard let status = self.expandStatusValue, status.duration > 0.0 else {
+            return 0.0
+        }
+        return CGFloat(max(0.0, min(1.0, status.timestamp / status.duration)))
+    }
+
+    func isPulseActive() -> Bool {
+        return self.toggleSwitch.isOn
+    }
+
+    func isPlaybackActive() -> Bool {
+        return self.isPlaying
+    }
+
+    func setPulseActive(_ active: Bool, animated: Bool) {
+        self.suppressPulseCallback = true
+        self.toggleSwitch.setOn(active, animated: animated)
+        self.suppressPulseCallback = false
+        self.pulseGlowLayer.isHidden = !active
+    }
+
+    func updateSessionAudience(participantCount: Int) {
+        self.participantsCountLabel.text = participantCount > 0 ? "+\(participantCount)" : ""
+        if self.lastSize.width > 0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
+    }
+
+    func showItem(_ item: MediaBrowserItem, seekTo position: Double? = nil) {
         self.currentItem = item
 
         if let previewNode = self.previewNode {
@@ -392,11 +427,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.playButton.isHidden = true
         self.loadingIndicator.stopAnimating()
 
-        if let resolution = Self.resolutionString(for: item.message) {
-            self.fileNameLabel.text = "\(item.fileName) · \(resolution)"
-        } else {
-            self.fileNameLabel.text = item.fileName
-        }
+        self.fileNameLabel.text = item.fileName.isEmpty ? "Без названия" : item.fileName
 
         self.dateLabel.text = mediaBrowserDateString(item.timestamp, locale: Locale(identifier: self.presentationData.strings.baseLanguageCode))
 
@@ -412,8 +443,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.senderAvatarNode.isHidden = true
         }
 
-        self.participantsCountLabel.text = "+24"
+        self.participantsCountLabel.text = ""
         self.block3TimeLabel.text = "00:00"
+        self.participantsCountLabel.isHidden = true
 
         let provider = MediaPreviewProviderRegistry.shared.provider(for: item)
         let preview = provider.makePreviewNode(item: item, context: self.context, presentationData: self.presentationData)
@@ -443,10 +475,20 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.playButton.isHidden = false
         }
         self.bindExpandStatus(preview)
+        if let position = position, position > 0.0 {
+            Queue.mainQueue().after(0.15) { [weak self, weak preview] in
+                guard self?.previewNode === preview else { return }
+                self?.seekPreview(to: position, report: false)
+            }
+        }
+        if self.lastSize.width > 0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
 
     }
 
     private func handlePreviewStatus(_ status: MediaPreviewPlaybackStatus) {
+        self.onPlaybackStatusChanged?(status)
         switch status {
         case .idle:
             self.loadingIndicator.stopAnimating()
@@ -537,12 +579,53 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func rewindTapped() {
         guard let status = self.expandStatusValue, status.duration > 0 else { return }
-        self.previewNode?.seek(to: max(0.0, status.timestamp - 15.0))
+        self.seekPreview(to: max(0.0, status.timestamp - 15.0), report: true)
     }
 
     @objc private func forwardTapped() {
         guard let status = self.expandStatusValue, status.duration > 0 else { return }
-        self.previewNode?.seek(to: min(status.duration, status.timestamp + 15.0))
+        self.seekPreview(to: min(status.duration, status.timestamp + 15.0), report: true)
+    }
+
+    func applyRemotePlaybackAction(position: Double, progress: CGFloat, isPlaying: Bool) {
+        self.seekPreviewIfNeeded(to: position, tolerance: isPlaying ? self.remoteSeekTolerance : 0.35)
+        if isPlaying {
+            if !self.isPlaying {
+                self.previewNode?.play()
+            }
+        } else {
+            if self.isPlaying {
+                self.previewNode?.pause()
+            } else {
+                self.previewNode?.pause()
+            }
+        }
+    }
+
+    func applyRemotePlaybackState(position: Double, progress: CGFloat) {
+        self.seekPreviewIfNeeded(to: position, tolerance: self.remoteSeekTolerance)
+    }
+
+    private func seekPreview(to timestamp: Double, report: Bool) {
+        self.previewNode?.seek(to: timestamp)
+        if report {
+            self.onSeekRequested?(timestamp, self.progress(for: timestamp))
+        }
+    }
+
+    private func seekPreviewIfNeeded(to timestamp: Double, tolerance: Double) {
+        let current = self.currentPlaybackPosition()
+        guard abs(current - timestamp) > tolerance else {
+            return
+        }
+        self.seekPreview(to: timestamp, report: false)
+    }
+
+    private func progress(for timestamp: Double) -> CGFloat {
+        guard let status = self.expandStatusValue, status.duration > 0.0 else {
+            return 0.0
+        }
+        return CGFloat(max(0.0, min(1.0, timestamp / status.duration)))
     }
 
     @objc private func prevTapped() {
@@ -555,6 +638,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func pulseTogglecChanged() {
         self.pulseGlowLayer.isHidden = !self.toggleSwitch.isOn
+        if !self.suppressPulseCallback {
+            self.onPulseChanged?(self.toggleSwitch.isOn)
+        }
     }
 
     private func bindExpandStatus(_ preview: MediaPreviewNode?) {
@@ -575,15 +661,38 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.expandStatusValue = s
             let elapsed = max(0.0, s.timestamp)
             let total = max(0.0, s.duration)
-            self.expandElapsedLabel.text = "\(Self.formatTime(elapsed)) / \(Self.formatTime(total))"
+            self.expandElapsedLabel.text = Self.elapsedRemainingString(elapsed: elapsed, duration: total)
             self.expandRemainingLabel.text = ""
             self.updateBlock3Time(s)
+            self.updateBlock2Progress(s)
+            let progress: CGFloat
+            if s.duration > 0.0 {
+                progress = CGFloat(max(0.0, min(1.0, s.timestamp / s.duration)))
+            } else {
+                progress = 0.0
+            }
+            let isPlaying: Bool
+            switch s.status {
+            case .playing:
+                isPlaying = true
+            case .paused, .buffering:
+                isPlaying = false
+            }
+            self.onPlaybackPositionUpdated?(s.timestamp, progress, isPlaying)
         }))
     }
 
     private static func formatTime(_ seconds: Double) -> String {
         let total = Int(max(0.0, seconds.rounded()))
         return String(format: "%02d:%02d", total / 60, total % 60)
+    }
+
+    private static func elapsedRemainingString(elapsed: Double, duration: Double) -> String {
+        guard duration > 0.0 else {
+            return Self.formatTime(elapsed)
+        }
+        let remaining = max(0.0, duration - elapsed)
+        return "\(Self.formatTime(elapsed)) / -\(Self.formatTime(remaining))"
     }
 
     private func updateBlock2Progress(_ status: MediaPlayerStatus) {
@@ -596,12 +705,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private func updateBlock3Time(_ status: MediaPlayerStatus) {
         let elapsed = max(0.0, status.timestamp)
         let total = max(0.0, status.duration)
-        switch status.status {
-        case .playing:
-            self.block3TimeLabel.text = "\(Self.formatTime(elapsed)) / \(Self.formatTime(total))"
-        case .paused, .buffering:
-            self.block3TimeLabel.text = Self.formatTime(elapsed)
-        }
+        self.block3TimeLabel.text = Self.elapsedRemainingString(elapsed: elapsed, duration: total)
     }
 
     private static func resolutionString(for message: Message) -> String? {
@@ -741,6 +845,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let dateBlockWidth = dateLabelWidth + 6.0 + dateDotSize
 
         if overlay {
+            self.fileNameLabel.font = UIFont.systemFont(ofSize: 28.0, weight: .regular)
             self.fileNameLabel.textAlignment = .right
             self.dateLabel.textAlignment = .right
             let titleHeight = self.fileNameLabel.font.lineHeight * 2.0
@@ -755,10 +860,11 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.senderAvatarNode.view.frame = CGRect(x: self.dateLabel.frame.maxX + 6.0, y: dateY + (20.0 - dateDotSize) / 2.0, width: dateDotSize, height: dateDotSize)
             self.senderAvatarNode.updateSize(size: CGSize(width: dateDotSize, height: dateDotSize))
         } else {
+            self.fileNameLabel.font = UIFont.systemFont(ofSize: 24.0, weight: .regular)
             self.fileNameLabel.textAlignment = .left
             self.dateLabel.textAlignment = .left
-            let titleOverlap: CGFloat = 24.0
-            let titleLeft = max(16.0, previewFrame.maxX - titleOverlap)
+            let titleGap: CGFloat = 16.0
+            let titleLeft = max(16.0, previewFrame.maxX + titleGap)
             let titleRight = innerWidth - 16.0
             let titleWidth = max(120.0, titleRight - titleLeft)
             let titleHeight = self.fileNameLabel.font.lineHeight * 2.0
@@ -817,40 +923,30 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.expandElapsedLabel.isHidden = true
         }
 
-        let avatarSize: CGFloat = 20.0
-        let avatarOverlap: CGFloat = 8.0
         let countSize = (self.participantsCountLabel.text ?? "").size(withAttributes: [.font: self.participantsCountLabel.font as Any])
         let countWidth = ceil(countSize.width)
-        let avatarsBaseY = scrubberVisible ? self.expandScrubbingNode.view.frame.minY : iconsY
-        let avatarsY = avatarsBaseY - avatarSize - 14.0
+        let statusBaseY = scrubberVisible ? self.expandScrubbingNode.view.frame.minY : iconsY
+        let statusY = statusBaseY - 34.0
         let countX = iconsRight - countWidth
-        let frontAvatarX = countX - 8.0 - avatarSize
-        let backAvatarX = frontAvatarX - (avatarSize - avatarOverlap)
-        self.avatarBackView.frame = CGRect(x: backAvatarX, y: avatarsY, width: avatarSize, height: avatarSize)
-        self.avatarFrontView.frame = CGRect(x: frontAvatarX, y: avatarsY, width: avatarSize, height: avatarSize)
-        self.participantsCountLabel.frame = CGRect(x: countX, y: avatarsY + (avatarSize - countSize.height) / 2.0, width: countWidth, height: ceil(countSize.height))
+        self.participantsCountLabel.frame = CGRect(x: countX, y: statusY, width: countWidth, height: ceil(countSize.height))
 
         if canPlay && !self.isExpanded {
-            self.avatarBackView.isHidden = true
-            self.avatarFrontView.isHidden = true
             self.participantsCountLabel.isHidden = true
             self.block3TimeLabel.isHidden = false
             let timeText = self.block3TimeLabel.text ?? ""
             let timeAttrs: [NSAttributedString.Key: Any] = [.font: self.block3TimeLabel.font as Any]
             let timeSize = (timeText as NSString).size(withAttributes: timeAttrs)
-            let timeWidth = max(60.0, ceil(timeSize.width) + 4.0)
+            let timeWidth = max(106.0, ceil(timeSize.width) + 4.0)
             let timeHeight = ceil(timeSize.height)
-            self.block3TimeLabel.frame = CGRect(x: iconsRight - timeWidth, y: avatarsY + (avatarSize - timeHeight) / 2.0, width: timeWidth, height: timeHeight)
+            self.block3TimeLabel.frame = CGRect(x: iconsRight - timeWidth, y: statusY, width: timeWidth, height: timeHeight)
 
             self.fitScrubbingNode.isHidden = false
             let scrubberHeight: CGFloat = 22.0
             let scrubberRight = self.block3TimeLabel.frame.minX - 10.0
-            let scrubberY = avatarsY + (avatarSize - scrubberHeight) / 2.0
+            let scrubberY = statusY + (timeHeight - scrubberHeight) / 2.0
             self.fitScrubbingNode.view.frame = CGRect(x: leftInset, y: scrubberY, width: max(40.0, scrubberRight - leftInset), height: scrubberHeight)
         } else {
-            self.avatarBackView.isHidden = false
-            self.avatarFrontView.isHidden = false
-            self.participantsCountLabel.isHidden = false
+            self.participantsCountLabel.isHidden = countWidth <= 0.0
             self.block3TimeLabel.isHidden = true
             self.fitScrubbingNode.isHidden = true
         }

@@ -5,21 +5,23 @@ import TelegramCore
 import AccountContext
 
 public enum MediaBrowserTab: Int, CaseIterable {
-    case allFiles
-    case pinned
     case onTV
+    case pinned
+    case allFiles
     case video
     case photo
-    case audio
+    case documents
+    case addCustomFilter
 
     var title: String {
         switch self {
-        case .allFiles: return "Все файлы"
-        case .pinned: return "Закреп"
         case .onTV: return "На телике"
+        case .pinned: return "Закреп"
+        case .allFiles: return "Все файлы"
         case .video: return "Видео"
         case .photo: return "Фото"
-        case .audio: return "Аудио"
+        case .documents: return "Документы"
+        case .addCustomFilter: return "+"
         }
     }
 }
@@ -60,6 +62,7 @@ final class MediaBrowserDataSource {
     private var loadingState: MediaBrowserLoadingState = .idle
     private var lastSearchState: SearchMessagesState?
     private var disposable = MetaDisposable()
+    private var directMessagesDisposable = MetaDisposable()
 
     var onItemsUpdated: (([MediaBrowserItem]) -> Void)?
     var onLoadingStateChanged: ((MediaBrowserLoadingState) -> Void)?
@@ -101,6 +104,7 @@ final class MediaBrowserDataSource {
 
     deinit {
         self.disposable.dispose()
+        self.directMessagesDisposable.dispose()
     }
 
     func switchFilter(_ filter: MediaBrowserTab) {
@@ -109,6 +113,7 @@ final class MediaBrowserDataSource {
         self.rawItems = []
         self.lastSearchState = nil
         self.loadingState = .idle
+        self.disposable.set(nil)
         self.onItemsUpdated?(self.items)
         self.loadInitialBatch()
     }
@@ -129,12 +134,40 @@ final class MediaBrowserDataSource {
         self.items = []
         self.rawItems = []
         self.lastSearchState = nil
+        if self.currentFilter == .onTV || self.currentFilter == .addCustomFilter {
+            self.loadingState = .exhausted
+            self.disposable.set(nil)
+            self.onItemsUpdated?(self.items)
+            self.onLoadingStateChanged?(self.loadingState)
+            return
+        }
         self.load()
     }
 
     func loadNextBatch() {
         guard case .idle = self.loadingState, self.lastSearchState != nil else { return }
         self.load()
+    }
+
+    func loadItems(messageIds: [EngineMessage.Id], completion: @escaping ([MediaBrowserItem]) -> Void) {
+        guard !messageIds.isEmpty else {
+            completion([])
+            return
+        }
+
+        let signal = self.context.engine.messages.getMessagesLoadIfNecessary(messageIds, strategy: .cloud(skipLocal: false))
+        |> deliverOnMainQueue
+        self.directMessagesDisposable.set(signal.start(next: { [weak self] result in
+            guard let self = self else { return }
+            switch result {
+            case .progress:
+                break
+            case let .result(messages):
+                completion(messages.compactMap { self.mapMessage($0) })
+            }
+        }, error: { _ in
+            completion([])
+        }))
     }
 
     private func load() {
@@ -212,9 +245,10 @@ final class MediaBrowserDataSource {
         case .allFiles: return [.photoOrVideo, .file, .music, .voiceOrInstantVideo]
         case .photo: return [.photo]
         case .video: return [.video]
-        case .audio: return [.music]
-        case .pinned: return [nil]
-        case .onTV: return [.video]
+        case .documents: return [.file]
+        case .pinned: return [.pinned]
+        case .onTV: return []
+        case .addCustomFilter: return []
         }
     }
 

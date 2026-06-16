@@ -415,6 +415,7 @@ plist_fragment(
             <array>
                 <string>tg</string>
                 <string>tonsite</string>
+                <string>multigram</string>
             </array>
         </dict>
     </array>

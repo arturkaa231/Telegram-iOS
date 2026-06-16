@@ -179,16 +179,21 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private let playerNode: MediaBrowserPlayerNode
     private let tabBarNode: MediaBrowserTabBarNode
     private let listNode: MediaBrowserListNode
+    private let onTVListNode: OnTVSessionsListNode
     private let chatListNode: MediaBrowserChatListNode
 
     private let dataSource: MediaBrowserDataSource
+    private let onTVSessionCoordinator: OnTVSessionCoordinator
 
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
     private var basePresentationData: PresentationData
     private var mode: Mode
+    private var selectedTab: MediaBrowserTab = .allFiles
     private var loadedItems: [MediaBrowserItem] = []
     private var currentItemIndex: Int?
+    private var mediaLoadingState: MediaBrowserLoadingState = .idle
+    private var pendingOnTVResolverLoad: Bool = false
 
     enum Mode {
         case files
@@ -214,11 +219,36 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.playerNode = MediaBrowserPlayerNode(context: context, presentationData: presentationData)
 
         self.dataSource = MediaBrowserDataSource(context: context, peerId: peerId)
+        let syncConfiguration = Self.onTVSyncConfiguration()
+        let onTVSessionsStore: OnTVSessionsStore
+        if let endpoint = syncConfiguration.endpoint {
+            NSLog("[MultigramOnTV] Using synced store endpoint=%@ peerId=%lld accountPeerId=%lld", endpoint.absoluteString, peerId.toInt64(), context.account.peerId.toInt64())
+            let syncTokenService = Self.syncTokenService(configuration: syncConfiguration)
+            onTVSessionsStore = SyncedOnTVSessionsStore(
+                peerId: peerId,
+                accountPeerId: context.account.peerId,
+                transport: ServerOnTVSessionsTransport(
+                    endpoint: endpoint,
+                    authToken: syncConfiguration.authToken,
+                    accountPeerId: context.account.peerId,
+                    authTokenProvider: syncTokenService.map { service in
+                        return { chatScope, completion in
+                            service.token(forChatScope: chatScope, completion: completion)
+                        }
+                    }
+                )
+            )
+        } else {
+            NSLog("[MultigramOnTV] Using local store peerId=%lld accountPeerId=%lld", peerId.toInt64(), context.account.peerId.toInt64())
+            onTVSessionsStore = LocalOnTVSessionsStore(peerId: peerId, accountPeerId: context.account.peerId)
+        }
+        self.onTVSessionCoordinator = OnTVSessionCoordinator(store: onTVSessionsStore, accountPeerId: context.account.peerId)
 
         var onBackHandlerPlaceholder: (() -> Void)?
         self.tabBarNode = MediaBrowserTabBarNode(presentationData: presentationData, onBack: { onBackHandlerPlaceholder?() })
 
         self.listNode = MediaBrowserListNode(context: context, presentationData: presentationData)
+        self.onTVListNode = OnTVSessionsListNode(presentationData: presentationData, accountPeerId: context.account.peerId)
         self.chatListNode = MediaBrowserChatListNode(context: context, presentationData: presentationData)
 
         super.init()
@@ -236,6 +266,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.contentNode.addSubnode(self.playerNode)
         self.contentNode.addSubnode(self.tabBarNode)
         self.contentNode.addSubnode(self.listNode)
+        self.contentNode.addSubnode(self.onTVListNode)
         self.contentNode.addSubnode(self.chatListNode)
         self.chatListNode.isHidden = true
 
@@ -271,15 +302,179 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.playerNode.onNextItem = { [weak self] in
             self?.navigateNeighbor(1)
         }
+        self.playerNode.onPulseChanged = { [weak self] isOn in
+            guard let self = self else { return }
+            self.onTVSessionCoordinator.handlePulseChanged(
+                isOn,
+                displayedItem: self.playerNode.displayedItem,
+                position: self.playerNode.currentPlaybackPosition(),
+                progress: self.playerNode.currentPlaybackProgress()
+            )
+        }
+        self.playerNode.onPlaybackStatusChanged = { [weak self] status in
+            self?.onTVSessionCoordinator.handlePlaybackStatusChanged(status)
+        }
+        self.playerNode.onSeekRequested = { [weak self] position, progress in
+            self?.onTVSessionCoordinator.handleSeekRequested(position: position, progress: progress)
+        }
+        self.playerNode.onPlaybackPositionUpdated = { [weak self] position, progress, isPlaying in
+            self?.onTVSessionCoordinator.handlePlaybackPositionUpdated(position: position, progress: progress, isPlaying: isPlaying)
+        }
+    }
+
+    deinit {
+        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
+    }
+
+    private static let defaultDevelopmentOnTVSyncEndpoint = "http://127.0.0.1:4010"
+    private static let defaultDevelopmentOnTVSyncToken = "dev-local-token"
+    private static let defaultProductionOnTVSyncEndpoint = "https://multigram-sync-layer.onrender.com"
+    private static let defaultTelegramLoginClientId = "8908892975"
+    private static let defaultTelegramLoginRedirectURI = "multigram://tglogin"
+
+    private static func onTVSyncConfiguration() -> (endpoint: URL?, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?) {
+        let endpointKeys = ["MultigramOnTVSyncEndpoint", "PlayGramOnTVSyncEndpoint"]
+        let tokenKeys = ["MultigramOnTVSyncToken", "PlayGramOnTVSyncToken"]
+        let telegramClientIdKeys = ["MultigramTelegramLoginClientId", "PlayGramTelegramLoginClientId"]
+        let telegramRedirectURIKeys = ["MultigramTelegramLoginRedirectURI", "PlayGramTelegramLoginRedirectURI"]
+        let arguments = ProcessInfo.processInfo.arguments
+        var didUpdateDefaults = false
+        var launchAuthToken: String?
+        var didPassAuthTokenArgument = false
+        var didPassTelegramLoginArgument = false
+
+        for key in endpointKeys {
+            if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
+                UserDefaults.standard.set(value, forKey: "MultigramOnTVSyncEndpoint")
+                UserDefaults.standard.set(value, forKey: "PlayGramOnTVSyncEndpoint")
+                didUpdateDefaults = true
+            }
+        }
+        for key in tokenKeys {
+            if let value = Self.launchArgumentValue(named: key, arguments: arguments) {
+                didPassAuthTokenArgument = true
+                if Self.shouldClearLaunchValue(value) {
+                    UserDefaults.standard.removeObject(forKey: "MultigramOnTVSyncToken")
+                    UserDefaults.standard.removeObject(forKey: "PlayGramOnTVSyncToken")
+                    launchAuthToken = nil
+                } else if !value.isEmpty {
+                    UserDefaults.standard.set(value, forKey: "MultigramOnTVSyncToken")
+                    UserDefaults.standard.set(value, forKey: "PlayGramOnTVSyncToken")
+                    launchAuthToken = value
+                }
+                didUpdateDefaults = true
+            }
+        }
+        for key in telegramClientIdKeys {
+            if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
+                UserDefaults.standard.set(value, forKey: "MultigramTelegramLoginClientId")
+                UserDefaults.standard.set(value, forKey: "PlayGramTelegramLoginClientId")
+                didPassTelegramLoginArgument = true
+                didUpdateDefaults = true
+            }
+        }
+        for key in telegramRedirectURIKeys {
+            if let value = Self.launchArgumentValue(named: key, arguments: arguments), !value.isEmpty {
+                UserDefaults.standard.set(value, forKey: "MultigramTelegramLoginRedirectURI")
+                UserDefaults.standard.set(value, forKey: "PlayGramTelegramLoginRedirectURI")
+                didPassTelegramLoginArgument = true
+                didUpdateDefaults = true
+            }
+        }
+        if didUpdateDefaults {
+            UserDefaults.standard.synchronize()
+        }
+
+        let endpointString = endpointKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
+        let storedAuthToken = tokenKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
+        let authToken = didPassAuthTokenArgument ? launchAuthToken : (didPassTelegramLoginArgument ? nil : storedAuthToken)
+        let telegramLoginClientId = telegramClientIdKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
+        let telegramLoginRedirectURI = telegramRedirectURIKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
+        if let endpointString = endpointString, let endpoint = URL(string: endpointString) {
+            NSLog("[MultigramOnTV] Sync configuration endpoint=%@ tokenPresent=%@ telegramLogin=%@", endpointString, authToken == nil ? "false" : "true", telegramLoginClientId == nil ? "false" : "true")
+            return (endpoint, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+        }
+
+        if let defaultConfiguration = Self.defaultOnTVSyncConfiguration(authToken: authToken, telegramLoginClientId: telegramLoginClientId ?? Self.defaultTelegramLoginClientId, telegramLoginRedirectURI: telegramLoginRedirectURI ?? Self.defaultTelegramLoginRedirectURI) {
+            NSLog("[MultigramOnTV] Sync configuration default endpoint=%@ tokenPresent=%@ telegramLogin=%@", defaultConfiguration.endpoint.absoluteString, defaultConfiguration.authToken == nil ? "false" : "true", defaultConfiguration.telegramLoginClientId == nil ? "false" : "true")
+            return defaultConfiguration
+        }
+
+        NSLog("[MultigramOnTV] Sync configuration missing endpoint tokenPresent=%@", authToken == nil ? "false" : "true")
+        return (nil, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+    }
+
+    private static func defaultOnTVSyncConfiguration(authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?) -> (endpoint: URL, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?)? {
+        #if DEBUG
+        guard ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] != nil,
+              let endpoint = URL(string: Self.defaultDevelopmentOnTVSyncEndpoint) else {
+            return nil
+        }
+        return (endpoint, authToken ?? Self.defaultDevelopmentOnTVSyncToken, nil, nil)
+        #else
+        guard let endpoint = URL(string: Self.defaultProductionOnTVSyncEndpoint) else {
+            return nil
+        }
+        return (endpoint, authToken, telegramLoginClientId, telegramLoginRedirectURI)
+        #endif
+    }
+
+    private static func syncTokenService(configuration: (endpoint: URL?, authToken: String?, telegramLoginClientId: String?, telegramLoginRedirectURI: String?)) -> OnTVSyncTokenService? {
+        guard
+            configuration.authToken == nil,
+            let endpoint = configuration.endpoint,
+            let clientId = configuration.telegramLoginClientId,
+            let redirectURI = configuration.telegramLoginRedirectURI,
+            !clientId.isEmpty,
+            !redirectURI.isEmpty
+        else {
+            return nil
+        }
+        let identityProvider = OnTVTelegramLoginIdentityProvider(clientId: clientId, redirectURI: redirectURI)
+        return OnTVSyncTokenService(syncEndpoint: endpoint, identityProvider: identityProvider)
+    }
+
+    private static func launchArgumentValue(named name: String, arguments: [String]) -> String? {
+        let dashName = "-\(name)"
+        for index in arguments.indices {
+            let argument = arguments[index]
+            if argument == dashName {
+                let valueIndex = arguments.index(after: index)
+                guard valueIndex < arguments.endIndex else {
+                    return nil
+                }
+                return arguments[valueIndex]
+            }
+            let prefix = "\(dashName)="
+            if argument.hasPrefix(prefix) {
+                return String(argument.dropFirst(prefix.count))
+            }
+        }
+        return nil
+    }
+
+    private static func shouldClearLaunchValue(_ value: String) -> Bool {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized == "__clear__" || normalized == "none" || normalized == "null"
     }
 
     private func navigateNeighbor(_ offset: Int) {
         guard let idx = self.currentItemIndex else { return }
         let newIdx = idx + offset
         guard newIdx >= 0, newIdx < self.loadedItems.count else { return }
+        let shouldCarryPulse = self.onTVSessionCoordinator.prepareForLocalItemChange(
+            isPulseActive: self.playerNode.isPulseActive(),
+            displayedItem: self.playerNode.displayedItem,
+            position: self.playerNode.currentPlaybackPosition(),
+            progress: self.playerNode.currentPlaybackProgress()
+        )
+        let nextItem = self.loadedItems[newIdx]
         self.currentItemIndex = newIdx
-        self.playerNode.showItem(self.loadedItems[newIdx])
+        self.playerNode.showItem(nextItem)
         self.listNode.setSelectedItemIndex(newIdx)
+        if shouldCarryPulse {
+            _ = self.onTVSessionCoordinator.startPulse(item: nextItem, position: 0.0, progress: 0.0)
+        }
     }
 
     var onPresentGallery: ((MediaBrowserItem) -> Void)?
@@ -295,6 +490,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private func switchToChatPicker() {
         guard self.mode != .chatPicker else { return }
+        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
         self.mode = .chatPicker
         if let layout = self.validLayout {
             self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.25, curve: .easeInOut))
@@ -302,6 +498,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     private func switchToFiles(peerId: EnginePeer.Id) {
+        self.onTVSessionCoordinator.switchPeer(peerId)
         self.peerId = peerId
         self.currentItemIndex = nil
         self.loadedItems = []
@@ -318,6 +515,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.playerNode.updatePresentationData(presentationData)
         self.tabBarNode.updatePresentationData(presentationData)
         self.listNode.updatePresentationData(presentationData)
+        self.onTVListNode.updatePresentationData(presentationData)
         self.chatListNode.updatePresentationData(presentationData)
     }
 
@@ -331,17 +529,37 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     @objc private func dimTapped() {
+        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
         self.dismiss()
     }
 
     private func setupDataSource() {
         self.tabBarNode.onTabChanged = { [weak self] filter in
-            self?.dataSource.switchFilter(filter)
+            guard let self = self else { return }
+            self.selectedTab = filter
+            if filter == .onTV {
+                self.onTVSessionCoordinator.reload()
+            } else if filter == .pinned {
+                self.listNode.setEmptyText("Нет закреплённых файлов")
+            } else if filter == .documents {
+                self.listNode.setEmptyText("Нет документов")
+            } else if filter == .addCustomFilter {
+                self.listNode.setEmptyText("Нет пользовательских фильтров")
+            } else {
+                self.listNode.setEmptyText("Нет медиафайлов")
+            }
+            if filter != .onTV {
+                self.dataSource.switchFilter(filter)
+            }
+            if let layout = self.validLayout {
+                self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.2, curve: .easeInOut))
+            }
         }
 
         self.dataSource.onItemsUpdated = { [weak self] items in
             guard let self = self else { return }
             self.loadedItems = items
+            self.onTVSessionCoordinator.registerLoadedItems(items)
             self.listNode.updateItems(items)
             self.listNode.setAvailableSenders(self.dataSource.uniqueSenders())
             if self.currentItemIndex == nil, let first = items.first {
@@ -357,7 +575,68 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
 
         self.dataSource.onLoadingStateChanged = { [weak self] state in
-            self?.listNode.updateLoadingState(state)
+            guard let self = self else { return }
+            self.mediaLoadingState = state
+            self.listNode.updateLoadingState(state)
+            self.flushPendingOnTVResolverLoad()
+        }
+
+        self.onTVSessionCoordinator.onSessionsUpdated = { [weak self] sessions in
+            self?.onTVListNode.updateSessions(sessions)
+        }
+        self.onTVSessionCoordinator.onUnresolvedSessionsUpdated = { [weak self] sessions in
+            self?.onTVListNode.updateUnresolvedSessions(sessions)
+        }
+        self.onTVSessionCoordinator.onResolvingSessionsChanged = { [weak self] isResolving in
+            self?.onTVListNode.updateResolvingSessions(isResolving)
+        }
+        self.onTVSessionCoordinator.onResolveMediaItems = { [weak self] messageIds in
+            guard let self = self else { return }
+            self.dataSource.loadItems(messageIds: messageIds, completion: { [weak self] items in
+                self?.onTVSessionCoordinator.registerLoadedItems(items)
+            })
+        }
+        self.onTVSessionCoordinator.onNeedsMoreMediaItems = { [weak self] in
+            self?.requestMoreMediaForOnTVHydration()
+        }
+        self.onTVSessionCoordinator.onActiveHeldSessionChanged = { [weak self] sessionId in
+            self?.onTVListNode.updateActiveSessionId(sessionId)
+        }
+        self.onTVSessionCoordinator.onPulseActiveChanged = { [weak self] isActive, animated in
+            self?.playerNode.setPulseActive(isActive, animated: animated)
+        }
+        self.onTVSessionCoordinator.onAudienceChanged = { [weak self] participantCount in
+            self?.playerNode.updateSessionAudience(participantCount: participantCount)
+        }
+        self.onTVSessionCoordinator.onFlashLockedSession = { [weak self] sessionId in
+            self?.onTVListNode.flashLockedSession(sessionId)
+        }
+        self.onTVSessionCoordinator.onShowNotice = { [weak self] text in
+            self?.onTVListNode.showNotice(text)
+        }
+        self.onTVSessionCoordinator.onOpenSession = { [weak self] context, _ in
+            guard let self = self else { return }
+            self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == context.fileId })
+            self.playerNode.showItem(context.item, seekTo: context.position)
+            self.listNode.setSelectedItemIndex(self.currentItemIndex)
+        }
+        self.onTVSessionCoordinator.onApplyRemotePlaybackAction = { [weak self] position, progress, isPlaying in
+            self?.playerNode.applyRemotePlaybackAction(position: position, progress: progress, isPlaying: isPlaying)
+        }
+        self.onTVSessionCoordinator.onApplyRemotePlaybackState = { [weak self] position, progress in
+            self?.playerNode.applyRemotePlaybackState(position: position, progress: progress)
+        }
+        self.onTVSessionCoordinator.currentPlaybackState = { [weak self] in
+            guard let self = self else {
+                return (position: 0.0, progress: 0.0)
+            }
+            return (
+                position: self.playerNode.currentPlaybackPosition(),
+                progress: self.playerNode.currentPlaybackProgress()
+            )
+        }
+        self.onTVSessionCoordinator.currentPlaybackIsPlaying = { [weak self] in
+            return self?.playerNode.isPlaybackActive() ?? false
         }
 
         self.listNode.onNearEnd = { [weak self] in
@@ -370,6 +649,12 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.listNode.onItemSelected = { [weak self] item in
             guard let self = self else { return }
+            self.onTVSessionCoordinator.stopForLocalItemSelection(
+                isPulseActive: self.playerNode.isPulseActive(),
+                displayedItem: self.playerNode.displayedItem,
+                position: self.playerNode.currentPlaybackPosition(),
+                progress: self.playerNode.currentPlaybackProgress()
+            )
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == item.messageId })
             self.playerNode.showItem(item)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
@@ -384,7 +669,30 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self?.applySenderFilter(sender.peerId, name: sender.name)
         }
 
+        self.onTVListNode.onSessionSelected = { [weak self] session in
+            guard let self = self else { return }
+            self.onTVSessionCoordinator.activateSession(
+                session,
+                displayedItem: self.playerNode.displayedItem,
+                position: self.playerNode.currentPlaybackPosition(),
+                progress: self.playerNode.currentPlaybackProgress()
+            )
+        }
+
+        self.onTVSessionCoordinator.reload()
         self.dataSource.loadInitialBatch()
+    }
+
+    private func requestMoreMediaForOnTVHydration() {
+        self.pendingOnTVResolverLoad = true
+        self.flushPendingOnTVResolverLoad()
+    }
+
+    private func flushPendingOnTVResolverLoad() {
+        guard self.pendingOnTVResolverLoad else { return }
+        guard case .idle = self.mediaLoadingState else { return }
+        self.pendingOnTVResolverLoad = false
+        self.dataSource.loadNextBatch()
     }
 
     func containerLayoutUpdated(layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
@@ -402,6 +710,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         let isChatPicker = self.mode == .chatPicker
         let listVisible = !self.isExpanded && !isChatPicker
+        let onTVVisible = listVisible && self.selectedTab == .onTV
+        let mediaListVisible = listVisible && self.selectedTab != .onTV
         let tabBarHeight: CGFloat = 44.0
 
         let playerHeight: CGFloat
@@ -426,7 +736,13 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         let listFrame = CGRect(x: 0, y: listTop, width: contentFrame.width, height: max(0.0, contentFrame.height - listTop))
         transition.updateFrame(node: self.listNode, frame: listFrame)
         self.listNode.updateLayout(size: listFrame.size, transition: transition)
-        transition.updateAlpha(node: self.listNode, alpha: listVisible ? 1.0 : 0.0)
+        self.listNode.isHidden = !mediaListVisible
+        transition.updateAlpha(node: self.listNode, alpha: mediaListVisible ? 1.0 : 0.0)
+
+        transition.updateFrame(node: self.onTVListNode, frame: listFrame)
+        self.onTVListNode.updateLayout(size: listFrame.size, transition: transition)
+        self.onTVListNode.isHidden = !onTVVisible
+        transition.updateAlpha(node: self.onTVListNode, alpha: onTVVisible ? 1.0 : 0.0)
 
         let chatListFrame = CGRect(origin: .zero, size: contentFrame.size)
         transition.updateFrame(node: self.chatListNode, frame: chatListFrame)

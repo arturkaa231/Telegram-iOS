@@ -10,7 +10,7 @@ final class MediaBrowserTabBarNode: ASDisplayNode {
     private let scrollView: UIScrollView
     private let backButton: UIButton
     private var tabButtons: [UIButton] = []
-    private var selectedIndex: Int = 0
+    private var selectedIndex: Int = MediaBrowserTab.allFiles.rawValue
 
     var onTabChanged: ((MediaBrowserTab) -> Void)?
 
@@ -68,6 +68,7 @@ final class MediaBrowserTabBarNode: ASDisplayNode {
     @objc private func tabTapped(_ sender: UIButton) {
         self.selectedIndex = sender.tag
         updateTabAppearance()
+        self.scrollSelectedTabIntoView(animated: true)
         let tab = MediaBrowserTab.allCases[sender.tag]
         self.onTabChanged?(tab)
     }
@@ -93,11 +94,24 @@ final class MediaBrowserTabBarNode: ASDisplayNode {
 
         var x: CGFloat = 8
         for button in self.tabButtons {
-            button.sizeToFit()
-            let buttonWidth = button.frame.width + 28
+            let title = button.title(for: .normal) ?? ""
+            let font = button.titleLabel?.font ?? UIFont.systemFont(ofSize: 14.0, weight: .medium)
+            let titleWidth = ceil((title as NSString).size(withAttributes: [.font: font]).width)
+            let buttonWidth = max(44.0, titleWidth + button.contentEdgeInsets.left + button.contentEdgeInsets.right)
             button.frame = CGRect(x: x, y: 5, width: buttonWidth, height: 34)
             x += buttonWidth + 8
         }
         self.scrollView.contentSize = CGSize(width: x, height: 44)
+        self.scrollSelectedTabIntoView(animated: false)
+    }
+
+    private func scrollSelectedTabIntoView(animated: Bool) {
+        guard self.selectedIndex >= 0 && self.selectedIndex < self.tabButtons.count else { return }
+        if self.selectedIndex <= MediaBrowserTab.allFiles.rawValue {
+            self.scrollView.setContentOffset(.zero, animated: animated)
+            return
+        }
+        let selectedFrame = self.tabButtons[self.selectedIndex].frame.insetBy(dx: -8.0, dy: 0.0)
+        self.scrollView.scrollRectToVisible(selectedFrame, animated: animated)
     }
 }

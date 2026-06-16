@@ -6066,7 +6066,10 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.moreBarButton.setContent(.more(MoreHeaderButton.optionsCircleImage(color: self.presentationData.theme.rootController.navigationBar.buttonColor)))
         self.moreInfoNavigationButton = ChatNavigationButton(action: .toggleInfoPanel, buttonItem: UIBarButtonItem(customDisplayNode: self.moreBarButton)!)
 
-        if case let .peer(peerId) = self.chatLocation, peerId.namespace == Namespaces.Peer.CloudUser, peerId != self.context.account.peerId {
+        if case let .peer(peerId) = self.chatLocation,
+           [Namespaces.Peer.CloudUser, Namespaces.Peer.CloudGroup, Namespaces.Peer.CloudChannel].contains(peerId.namespace),
+           peerId != self.context.account.peerId,
+           !peerId.isRepliesOrVerificationCodes {
             let outerSize: CGFloat = 44.0
             let innerSize: CGFloat = 24.0
             let circleButton = UIButton(type: .custom)
