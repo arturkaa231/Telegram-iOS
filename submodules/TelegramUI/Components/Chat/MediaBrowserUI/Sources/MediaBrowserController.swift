@@ -679,7 +679,6 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             )
         }
 
-        self.onTVSessionCoordinator.reload()
         self.dataSource.loadInitialBatch()
     }
 

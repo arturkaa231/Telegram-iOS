@@ -141,6 +141,7 @@ enum OnTVSessionEvent {
 }
 
 protocol OnTVSessionsStore: AnyObject {
+    var isReady: Bool { get }
     var onSessionsUpdated: (([OnTVPlaybackContext]) -> Void)? { get set }
     var onUnresolvedSessionsUpdated: (([OnTVRemotePlaybackContext]) -> Void)? { get set }
     var onResolvingSessionsChanged: ((Bool) -> Void)? { get set }
@@ -163,6 +164,7 @@ protocol OnTVSessionsStore: AnyObject {
 }
 
 protocol OnTVSessionsTransport: AnyObject {
+    var isReady: Bool { get }
     var onSessionEvent: ((OnTVSessionEvent) -> Void)? { get set }
     var onPlayerEvent: ((OnTVPlayerEvent) -> Void)? { get set }
     var onRemoteContexts: ((EnginePeer.Id, [OnTVRemotePlaybackContext]) -> Void)? { get set }
@@ -188,6 +190,9 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
     var onResolveMediaItems: (([EngineMessage.Id]) -> Void)?
     var onNeedsMoreMediaItems: (() -> Void)?
     var onStateConflict: (() -> Void)?
+    var isReady: Bool {
+        return true
+    }
 
     init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id) {
         self.peerId = peerId
@@ -463,6 +468,9 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     var onResolveMediaItems: (([EngineMessage.Id]) -> Void)?
     var onNeedsMoreMediaItems: (() -> Void)?
     var onStateConflict: (() -> Void)?
+    var isReady: Bool {
+        return self.transport.isReady
+    }
 
     init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id, transport: OnTVSessionsTransport) {
         self.peerId = peerId
@@ -486,7 +494,6 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
             self.onStateConflict?()
             self.transport.connect(chatId: self.peerId)
         }
-        self.transport.connect(chatId: peerId)
     }
 
     deinit {
@@ -496,7 +503,6 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     func switchPeer(_ peerId: EnginePeer.Id) {
         self.peerId = peerId
         self.localStore.switchPeer(peerId)
-        self.transport.connect(chatId: peerId)
         self.hydrateRemoteContexts(for: peerId)
         self.emitUnresolvedRemoteContexts(for: peerId)
     }
@@ -511,6 +517,7 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     }
 
     func reload() {
+        self.transport.connect(chatId: self.peerId)
         self.localStore.reload()
     }
 
@@ -691,13 +698,18 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
     private var chatId: EnginePeer.Id?
     private var syncChatId: String?
     private var isDisconnecting = false
+    private var isSocketOpen = false
     private var reconnectAttempts = 0
     private var reconnectWorkItem: DispatchWorkItem?
+    private var pendingPayloads: [[String: Any]] = []
 
     var onSessionEvent: ((OnTVSessionEvent) -> Void)?
     var onPlayerEvent: ((OnTVPlayerEvent) -> Void)?
     var onRemoteContexts: ((EnginePeer.Id, [OnTVRemotePlaybackContext]) -> Void)?
     var onStateConflict: ((String) -> Void)?
+    var isReady: Bool {
+        return self.isSocketOpen
+    }
 
     init(endpoint: URL, authToken: String?, accountPeerId: EnginePeer.Id, authTokenProvider: ((String, @escaping (String?) -> Void) -> Void)? = nil) {
         self.endpoint = Self.webSocketEndpoint(from: endpoint)
@@ -708,12 +720,15 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
     }
 
     func connect(chatId: EnginePeer.Id) {
+        let syncChatId = Self.syncScopeId(chatId: chatId, accountPeerId: self.accountPeerId)
+        if self.chatId == chatId, self.syncChatId == syncChatId, self.task != nil, !self.isDisconnecting {
+            return
+        }
         self.chatId = chatId
-        self.syncChatId = Self.syncScopeId(chatId: chatId, accountPeerId: self.accountPeerId)
+        self.syncChatId = syncChatId
         self.disconnect()
         self.isDisconnecting = false
 
-        let syncChatId = self.syncChatId ?? String(chatId.toInt64())
         if let authToken = self.authToken, !authToken.isEmpty {
             self.openSocket(chatId: chatId, syncChatId: syncChatId, authToken: authToken)
         } else if let authTokenProvider = self.authTokenProvider {
@@ -724,7 +739,6 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
                 }
                 guard let token = token, !token.isEmpty else {
                     NSLog("[MultigramOnTV] Sync token unavailable chatScope=%@", syncChatId)
-                    self.scheduleReconnect()
                     return
                 }
                 self.openSocket(chatId: chatId, syncChatId: syncChatId, authToken: token)
@@ -747,6 +761,7 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
         let task = session.webSocketTask(with: request)
         self.session = session
         self.task = task
+        self.isSocketOpen = false
         task.resume()
         self.receiveNext()
     }
@@ -757,6 +772,7 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
         self.reconnectWorkItem = nil
         self.task?.cancel(with: .goingAway, reason: nil)
         self.task = nil
+        self.isSocketOpen = false
         self.session?.invalidateAndCancel()
         self.session = nil
     }
@@ -774,13 +790,46 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
     }
 
     private func send(payload: [String: Any]) {
-        guard let task = self.task, JSONSerialization.isValidJSONObject(payload), let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+        guard JSONSerialization.isValidJSONObject(payload) else {
+            return
+        }
+        guard let task = self.task, self.isSocketOpen, let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+            self.enqueuePendingPayload(payload)
             return
         }
         let text = String(data: data, encoding: .utf8) ?? "{}"
         task.send(.string(text)) { [weak self] error in
             if error != nil {
+                self?.enqueuePendingPayload(payload)
                 self?.scheduleReconnect()
+            }
+        }
+    }
+
+    private func enqueuePendingPayload(_ payload: [String: Any]) {
+        self.pendingPayloads.append(payload)
+        if self.pendingPayloads.count > 30 {
+            self.pendingPayloads.removeFirst(self.pendingPayloads.count - 30)
+        }
+    }
+
+    private func flushPendingPayloads() {
+        guard self.isSocketOpen, let task = self.task, !self.pendingPayloads.isEmpty else {
+            return
+        }
+        let payloads = self.pendingPayloads
+        self.pendingPayloads.removeAll()
+        for payload in payloads {
+            guard JSONSerialization.isValidJSONObject(payload),
+                  let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
+                continue
+            }
+            let text = String(data: data, encoding: .utf8) ?? "{}"
+            task.send(.string(text)) { [weak self] error in
+                if error != nil {
+                    self?.enqueuePendingPayload(payload)
+                    self?.scheduleReconnect()
+                }
             }
         }
     }
@@ -823,7 +872,9 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
         NSLog("[MultigramOnTV] WebSocket opened endpoint=%@", self.endpoint.absoluteString)
+        self.isSocketOpen = true
         self.reconnectAttempts = 0
+        self.flushPendingPayloads()
     }
 
     func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didCloseWith closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
@@ -831,6 +882,7 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
             return
         }
         NSLog("[MultigramOnTV] WebSocket closed code=%ld", closeCode.rawValue)
+        self.isSocketOpen = false
         self.scheduleReconnect()
     }
 
@@ -842,6 +894,7 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
             return
         }
         self.task = nil
+        self.isSocketOpen = false
         self.session?.invalidateAndCancel()
         self.session = nil
         self.reconnectAttempts += 1

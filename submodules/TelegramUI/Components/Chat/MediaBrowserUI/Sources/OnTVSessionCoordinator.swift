@@ -125,6 +125,11 @@ final class OnTVSessionCoordinator {
 
     func handlePulseChanged(_ isOn: Bool, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
         if isOn {
+            guard self.store.isReady else {
+                self.onPulseActiveChanged?(false, true)
+                self.onShowNotice?("Сначала подключи На телике")
+                return
+            }
             guard let item = displayedItem else {
                 self.onPulseActiveChanged?(false, true)
                 return

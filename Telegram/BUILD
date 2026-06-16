@@ -400,20 +400,9 @@ plist_fragment(
             <key>CFBundleTypeRole</key>
             <string>Viewer</string>
             <key>CFBundleURLName</key>
-            <string>{telegram_bundle_id}</string>
-            <key>CFBundleURLSchemes</key>
-            <array>
-                <string>telegram</string>
-            </array>
-        </dict>
-        <dict>
-            <key>CFBundleTypeRole</key>
-            <string>Viewer</string>
-            <key>CFBundleURLName</key>
             <string>{telegram_bundle_id}.compatibility</string>
             <key>CFBundleURLSchemes</key>
             <array>
-                <string>tg</string>
                 <string>tonsite</string>
                 <string>multigram</string>
             </array>

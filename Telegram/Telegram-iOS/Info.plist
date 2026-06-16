@@ -198,20 +198,9 @@
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>CFBundleURLName</key>
-			<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-			<key>CFBundleURLSchemes</key>
-			<array>
-				<string>telegram</string>
-			</array>
-		</dict>
-		<dict>
-			<key>CFBundleTypeRole</key>
-			<string>Viewer</string>
-			<key>CFBundleURLName</key>
 			<string>$(PRODUCT_BUNDLE_IDENTIFIER).compatibility</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>tg</string>
 				<string>$(APP_SPECIFIC_URL_SCHEME)</string>
 				<string>multigram</string>
 			</array>

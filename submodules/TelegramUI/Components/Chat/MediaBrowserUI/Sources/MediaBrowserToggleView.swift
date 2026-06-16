@@ -45,6 +45,11 @@ final class MediaBrowserToggleView: UIControl {
         guard self.isOn != value else { return }
         self.isOn = value
         self.accessibilityValue = value ? "Включён" : "Выключен"
+        if value {
+            self.accessibilityTraits.insert(.selected)
+        } else {
+            self.accessibilityTraits.remove(.selected)
+        }
         let apply = {
             self.layoutThumb()
             self.updateColors()
@@ -59,6 +64,15 @@ final class MediaBrowserToggleView: UIControl {
     @objc private func tapped() {
         self.setOn(!self.isOn, animated: true)
         self.sendActions(for: .valueChanged)
+    }
+
+    override func accessibilityActivate() -> Bool {
+        self.tapped()
+        return true
+    }
+
+    override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        return self.bounds.insetBy(dx: -10.0, dy: -10.0).contains(point)
     }
 
     private func updateColors() {

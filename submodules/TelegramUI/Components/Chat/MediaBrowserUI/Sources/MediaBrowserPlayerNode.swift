@@ -25,6 +25,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private let muteButton: UIButton
     private let muteBackgroundView: UIView
     private let toggleSwitch: MediaBrowserToggleView
+    private let toggleHitButton: UIButton
 
     private let participantsCountLabel: UILabel
     private let block3TimeLabel: UILabel
@@ -113,6 +114,11 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.toggleSwitch = MediaBrowserToggleView()
         self.toggleSwitch.setOn(false, animated: false)
+        self.toggleHitButton = UIButton(type: .custom)
+        self.toggleHitButton.backgroundColor = .clear
+        self.toggleHitButton.isAccessibilityElement = true
+        self.toggleHitButton.accessibilityLabel = "Пульт"
+        self.toggleHitButton.accessibilityValue = "Выключен"
 
         self.participantsCountLabel = UILabel()
         self.participantsCountLabel.font = UIFont.systemFont(ofSize: 15.0, weight: .regular)
@@ -262,6 +268,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         host.addSubview(self.muteBackgroundView)
         host.addSubview(self.muteButton)
         host.addSubview(self.toggleSwitch)
+        host.addSubview(self.toggleHitButton)
         host.addSubview(self.participantsCountLabel)
         host.addSubview(self.block3TimeLabel)
         host.addSubview(self.nightModeButton)
@@ -295,6 +302,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.prevButton.addTarget(self, action: #selector(prevTapped), for: .touchUpInside)
         self.nextButton.addTarget(self, action: #selector(nextTapped), for: .touchUpInside)
         self.toggleSwitch.addTarget(self, action: #selector(pulseTogglecChanged), for: .valueChanged)
+        self.toggleHitButton.addTarget(self, action: #selector(toggleHitButtonTapped), for: .touchUpInside)
 
         self.expandScrubbingNode.seek = { [weak self] timestamp in
             self?.seekPreview(to: timestamp, report: true)
@@ -403,6 +411,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     func setPulseActive(_ active: Bool, animated: Bool) {
         self.suppressPulseCallback = true
         self.toggleSwitch.setOn(active, animated: animated)
+        self.toggleHitButton.accessibilityValue = active ? "Включён" : "Выключен"
+        if active {
+            self.toggleHitButton.accessibilityTraits.insert(.selected)
+        } else {
+            self.toggleHitButton.accessibilityTraits.remove(.selected)
+        }
         self.suppressPulseCallback = false
         self.pulseGlowLayer.isHidden = !active
     }
@@ -638,9 +652,20 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func pulseTogglecChanged() {
         self.pulseGlowLayer.isHidden = !self.toggleSwitch.isOn
+        self.toggleHitButton.accessibilityValue = self.toggleSwitch.isOn ? "Включён" : "Выключен"
+        if self.toggleSwitch.isOn {
+            self.toggleHitButton.accessibilityTraits.insert(.selected)
+        } else {
+            self.toggleHitButton.accessibilityTraits.remove(.selected)
+        }
         if !self.suppressPulseCallback {
             self.onPulseChanged?(self.toggleSwitch.isOn)
         }
+    }
+
+    @objc private func toggleHitButtonTapped() {
+        self.toggleSwitch.setOn(!self.toggleSwitch.isOn, animated: true)
+        self.pulseTogglecChanged()
     }
 
     private func bindExpandStatus(_ preview: MediaPreviewNode?) {
@@ -837,6 +862,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             width: switchSize.width,
             height: switchSize.height
         )
+        self.toggleHitButton.frame = self.toggleSwitch.frame.insetBy(dx: -10.0, dy: -10.0)
 
         let dateDotSize: CGFloat = 10.0
         let dateAttributes: [NSAttributedString.Key: Any] = [.font: self.dateLabel.font as Any]
