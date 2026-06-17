@@ -293,8 +293,18 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         for record in records where record.hasVisibleProgress {
             progressRecordsByFileId[record.fileId] = record
         }
+        guard self.progressRecordsByFileId != progressRecordsByFileId else {
+            return
+        }
         self.progressRecordsByFileId = progressRecordsByFileId
-        self.tableView.reloadData()
+        for cell in self.tableView.visibleCells {
+            guard let mediaCell = cell as? MediaBrowserItemCell, let indexPath = self.tableView.indexPath(for: cell), indexPath.row < self.items.count else {
+                continue
+            }
+            let item = self.items[indexPath.row]
+            let progressRecord = self.progressRecordsByFileId[MediaBrowserProgressStore.fileId(for: item.messageId)]
+            mediaCell.updateProgress(progressRecord: progressRecord, for: item, presentationData: self.presentationData)
+        }
     }
 
     func updateLoadingState(_ state: MediaBrowserLoadingState) {

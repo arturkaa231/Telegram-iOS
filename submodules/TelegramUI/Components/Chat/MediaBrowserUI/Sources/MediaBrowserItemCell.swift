@@ -245,32 +245,7 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.timeLabel.text = mediaBrowserDateString(item.timestamp, locale: locale)
         self.timeLabel.textColor = theme.list.itemSecondaryTextColor
 
-        let visibleProgressRecord = progressRecord?.hasVisibleProgress == true ? progressRecord : nil
-        if item.fileSize > 0 {
-            if let visibleProgressRecord = visibleProgressRecord {
-                self.sizeLabel.text = "\(Self.formatFileSize(item.fileSize)) · \(Self.formatProgress(visibleProgressRecord))"
-            } else {
-                self.sizeLabel.text = Self.formatFileSize(item.fileSize)
-            }
-            self.sizeLabel.isHidden = false
-        } else if let visibleProgressRecord = visibleProgressRecord {
-            self.sizeLabel.text = Self.formatProgress(visibleProgressRecord)
-            self.sizeLabel.isHidden = false
-        } else {
-            self.sizeLabel.text = ""
-            self.sizeLabel.isHidden = true
-        }
-        self.sizeLabel.textColor = theme.list.itemSecondaryTextColor
-
-        if let visibleProgressRecord = visibleProgressRecord, visibleProgressRecord.normalizedProgress >= 0.01 {
-            self.visibleProgress = visibleProgressRecord.normalizedProgress
-            self.progressTrackView.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
-            self.progressFillView.backgroundColor = theme.list.itemAccentColor
-            self.progressTrackView.isHidden = false
-        } else {
-            self.visibleProgress = nil
-            self.progressTrackView.isHidden = true
-        }
+        self.updateProgress(progressRecord: progressRecord, fileSize: item.fileSize, presentationData: presentationData)
 
         let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
 
@@ -361,6 +336,41 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.dualScenarioIcon.tintColor = theme.list.itemAccentColor
 
         setNeedsLayout()
+    }
+
+    func updateProgress(progressRecord: MediaBrowserProgressRecord?, for item: MediaBrowserItem, presentationData: PresentationData) {
+        self.updateProgress(progressRecord: progressRecord, fileSize: item.fileSize, presentationData: presentationData)
+        setNeedsLayout()
+    }
+
+    private func updateProgress(progressRecord: MediaBrowserProgressRecord?, fileSize: Int64, presentationData: PresentationData) {
+        let theme = presentationData.theme
+        let visibleProgressRecord = progressRecord?.hasVisibleProgress == true ? progressRecord : nil
+        if fileSize > 0 {
+            if let visibleProgressRecord = visibleProgressRecord {
+                self.sizeLabel.text = "\(Self.formatFileSize(fileSize)) · \(Self.formatProgress(visibleProgressRecord))"
+            } else {
+                self.sizeLabel.text = Self.formatFileSize(fileSize)
+            }
+            self.sizeLabel.isHidden = false
+        } else if let visibleProgressRecord = visibleProgressRecord {
+            self.sizeLabel.text = Self.formatProgress(visibleProgressRecord)
+            self.sizeLabel.isHidden = false
+        } else {
+            self.sizeLabel.text = ""
+            self.sizeLabel.isHidden = true
+        }
+        self.sizeLabel.textColor = theme.list.itemSecondaryTextColor
+
+        if let visibleProgressRecord = visibleProgressRecord, visibleProgressRecord.normalizedProgress >= 0.01 {
+            self.visibleProgress = visibleProgressRecord.normalizedProgress
+            self.progressTrackView.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
+            self.progressFillView.backgroundColor = theme.list.itemAccentColor
+            self.progressTrackView.isHidden = false
+        } else {
+            self.visibleProgress = nil
+            self.progressTrackView.isHidden = true
+        }
     }
 
     private static func extractFormat(from item: MediaBrowserItem) -> String? {
