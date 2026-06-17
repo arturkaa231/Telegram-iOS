@@ -130,7 +130,7 @@ final class MediaBrowserProgressStore {
             return transaction.retrieveItemCacheEntry(id: entryId)?.get(MediaBrowserProgressRecordList.self)?.records ?? []
         }
         |> deliverOnMainQueue
-        _ = signal.startStrict(next: { records in
+        _ = signal.start(next: { records in
             completion(records)
         })
     }
@@ -151,7 +151,7 @@ final class MediaBrowserProgressStore {
             return max(0.0, record.position)
         }
         |> deliverOnMainQueue
-        _ = signal.startStrict(next: { position in
+        _ = signal.start(next: { position in
             completion(position)
         })
     }
@@ -191,7 +191,7 @@ final class MediaBrowserProgressStore {
                 transaction.putItemCacheEntry(id: entryId, entry: entry)
             }
         }
-        _ = (signal |> deliverOnMainQueue).startStrict(completed: {
+        _ = (signal |> deliverOnMainQueue).start(completed: {
             completion?()
         })
     }
@@ -225,7 +225,7 @@ final class MediaBrowserProgressStore {
                 transaction.putItemCacheEntry(id: entryId, entry: entry)
             }
         }
-        _ = signal.startStrict()
+        _ = signal.start()
     }
 
     static func fileId(for messageId: EngineMessage.Id) -> String {
