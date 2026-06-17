@@ -568,6 +568,7 @@ final class OnTVSessionsListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
 final class OnTVSessionCell: UITableViewCell {
     static let reuseIdentifier = "OnTVSessionCell"
+    private static let thumbnailImageCache = NSCache<NSString, UIImage>()
 
     private let cardView = UIView()
     private let stripeView = UIView()
@@ -584,6 +585,7 @@ final class OnTVSessionCell: UITableViewCell {
     private var thumbnailDisposable: Disposable?
     private var thumbnailFetchDisposable: Disposable?
     private var thumbnailItemId: EngineMessage.Id?
+    private var thumbnailResourceKey: String?
     var onTap: (() -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -668,6 +670,7 @@ final class OnTVSessionCell: UITableViewCell {
         self.thumbnailFetchDisposable?.dispose()
         self.thumbnailFetchDisposable = nil
         self.thumbnailItemId = nil
+        self.thumbnailResourceKey = nil
         self.thumbnailView.image = nil
         self.iconView.isHidden = false
         self.iconView.image = nil
@@ -806,70 +809,88 @@ final class OnTVSessionCell: UITableViewCell {
     }
 
     private func configureThumbnail(item: MediaBrowserItem?, context: AccountContext?, theme: PresentationTheme, placeholderIconName: String, statusColor: UIColor) {
-        self.thumbnailDisposable?.dispose()
-        self.thumbnailDisposable = nil
-        self.thumbnailFetchDisposable?.dispose()
-        self.thumbnailFetchDisposable = nil
-        self.thumbnailItemId = item?.messageId
-        self.thumbnailView.image = nil
-        self.thumbnailView.backgroundColor = statusColor.withAlphaComponent(0.16)
-        self.iconView.isHidden = false
-        self.iconView.image = UIImage(systemName: placeholderIconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .semibold))
-        self.iconView.tintColor = statusColor
-
-        guard let item = item, let context = context else {
-            return
-        }
-
         var thumbResource: MediaResource?
         var thumbMediaReference: AnyMediaReference?
-        let messageRef = MessageReference(item.message)
-        for media in item.message.media {
-            if let image = media as? TelegramMediaImage, let representation = image.representations.first {
-                thumbResource = representation.resource
-                thumbMediaReference = .message(message: messageRef, media: image)
-                break
-            }
-            if let file = media as? TelegramMediaFile, let preview = file.previewRepresentations.first {
-                thumbResource = preview.resource
-                thumbMediaReference = .message(message: messageRef, media: file)
-                break
-            }
-            if let webpage = media as? TelegramMediaWebpage, case let .Loaded(content) = webpage.content {
-                let webpageRef = WebpageReference(webpage)
-                if let image = content.image, let representation = image.representations.first {
+        if let item = item {
+            let messageRef = MessageReference(item.message)
+            for media in item.message.media {
+                if let image = media as? TelegramMediaImage, let representation = image.representations.first {
                     thumbResource = representation.resource
-                    thumbMediaReference = .webPage(webPage: webpageRef, media: image)
+                    thumbMediaReference = .message(message: messageRef, media: image)
                     break
                 }
-                if let file = content.file, let preview = file.previewRepresentations.first {
+                if let file = media as? TelegramMediaFile, let preview = file.previewRepresentations.first {
                     thumbResource = preview.resource
-                    thumbMediaReference = .webPage(webPage: webpageRef, media: file)
+                    thumbMediaReference = .message(message: messageRef, media: file)
                     break
+                }
+                if let webpage = media as? TelegramMediaWebpage, case let .Loaded(content) = webpage.content {
+                    let webpageRef = WebpageReference(webpage)
+                    if let image = content.image, let representation = image.representations.first {
+                        thumbResource = representation.resource
+                        thumbMediaReference = .webPage(webPage: webpageRef, media: image)
+                        break
+                    }
+                    if let file = content.file, let preview = file.previewRepresentations.first {
+                        thumbResource = preview.resource
+                        thumbMediaReference = .webPage(webPage: webpageRef, media: file)
+                        break
+                    }
                 }
             }
         }
 
-        guard let resource = thumbResource else {
+        let thumbnailKey = thumbResource?.id.stringRepresentation
+        let shouldReloadThumbnail = self.thumbnailResourceKey != thumbnailKey
+        self.thumbnailItemId = item?.messageId
+        self.thumbnailView.backgroundColor = statusColor.withAlphaComponent(0.16)
+        self.iconView.image = UIImage(systemName: placeholderIconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .semibold))
+        self.iconView.tintColor = statusColor
+        if shouldReloadThumbnail {
+            self.thumbnailDisposable?.dispose()
+            self.thumbnailDisposable = nil
+            self.thumbnailFetchDisposable?.dispose()
+            self.thumbnailFetchDisposable = nil
+            self.thumbnailResourceKey = thumbnailKey
+            if let thumbnailKey = thumbnailKey, let cachedImage = Self.thumbnailImageCache.object(forKey: thumbnailKey as NSString) {
+                self.thumbnailView.image = cachedImage
+                self.iconView.isHidden = true
+            } else {
+                self.thumbnailView.image = nil
+                self.iconView.isHidden = false
+            }
+        } else if self.thumbnailView.image != nil {
+            self.iconView.isHidden = true
+        } else {
+            self.iconView.isHidden = false
+        }
+
+        guard let item = item, let context = context, let resource = thumbResource else {
             return
         }
 
         let itemId = item.messageId
-        let signal = context.account.postbox.mediaBox.resourceData(resource, option: .complete(waitUntilFetchStatus: false), attemptSynchronously: false)
-        |> deliverOnMainQueue
-        self.thumbnailDisposable = signal.startStrict(next: { [weak self] data in
-            guard let self = self, self.thumbnailItemId == itemId else {
-                return
+        if thumbnailKey.flatMap({ Self.thumbnailImageCache.object(forKey: $0 as NSString) }) == nil && (shouldReloadThumbnail || self.thumbnailDisposable == nil) {
+            let signal = context.account.postbox.mediaBox.resourceData(resource, option: .complete(waitUntilFetchStatus: false), attemptSynchronously: false)
+            |> deliverOnMainQueue
+            self.thumbnailDisposable = signal.startStrict(next: { [weak self] data in
+                guard let self = self, self.thumbnailItemId == itemId else {
+                    return
+                }
+                guard self.thumbnailResourceKey == resource.id.stringRepresentation else {
+                    return
+                }
+                if data.complete, let image = UIImage(contentsOfFile: data.path) {
+                    Self.thumbnailImageCache.setObject(image, forKey: resource.id.stringRepresentation as NSString)
+                    self.thumbnailView.image = image
+                    self.iconView.isHidden = true
+                }
+            })
+            if let mediaRef = thumbMediaReference {
+                let resourceRef = MediaResourceReference.media(media: mediaRef, resource: resource)
+                let fetchSignal = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .image, reference: resourceRef)
+                self.thumbnailFetchDisposable = fetchSignal.startStrict(next: { _ in })
             }
-            if data.complete, let image = UIImage(contentsOfFile: data.path) {
-                self.thumbnailView.image = image
-                self.iconView.isHidden = true
-            }
-        })
-        if let mediaRef = thumbMediaReference {
-            let resourceRef = MediaResourceReference.media(media: mediaRef, resource: resource)
-            let fetchSignal = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .image, reference: resourceRef)
-            self.thumbnailFetchDisposable = fetchSignal.startStrict(next: { _ in })
         }
     }
 

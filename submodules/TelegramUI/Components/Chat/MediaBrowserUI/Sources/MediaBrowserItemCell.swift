@@ -22,6 +22,7 @@ func mediaBrowserDateString(_ timestamp: Int32, locale: Locale) -> String {
 
 final class MediaBrowserItemCell: UITableViewCell {
     static let reuseIdentifier = "MediaBrowserItemCell"
+    private static let thumbnailImageCache = NSCache<NSString, UIImage>()
 
     private let thumbnailView: UIImageView = {
         let view = UIImageView()
@@ -32,6 +33,7 @@ final class MediaBrowserItemCell: UITableViewCell {
     }()
 
     private var thumbnailDisposable: Disposable?
+    private var thumbnailResourceKey: String?
 
     private let formatLabel: UILabel = {
         let l = UILabel()
@@ -138,6 +140,7 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.thumbnailFetchDisposable?.dispose()
         self.thumbnailFetchDisposable = nil
         self.thumbnailView.image = nil
+        self.thumbnailResourceKey = nil
         self.highlightBackgroundView.isHidden = true
         self.visibleProgress = nil
         self.progressTrackView.isHidden = true
@@ -270,12 +273,6 @@ final class MediaBrowserItemCell: UITableViewCell {
         }
 
         let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
-        self.thumbnailView.backgroundColor = placeholderColor
-        self.thumbnailDisposable?.dispose()
-        self.thumbnailDisposable = nil
-        self.thumbnailFetchDisposable?.dispose()
-        self.thumbnailFetchDisposable = nil
-        self.thumbnailView.image = nil
 
         var thumbResource: MediaResource?
         var thumbMediaReference: AnyMediaReference?
@@ -305,20 +302,41 @@ final class MediaBrowserItemCell: UITableViewCell {
                 }
             }
         }
+        let thumbnailKey = thumbResource?.id.stringRepresentation
+        let shouldReloadThumbnail = self.thumbnailResourceKey != thumbnailKey
+        self.thumbnailView.backgroundColor = placeholderColor
+        if shouldReloadThumbnail {
+            self.thumbnailDisposable?.dispose()
+            self.thumbnailDisposable = nil
+            self.thumbnailFetchDisposable?.dispose()
+            self.thumbnailFetchDisposable = nil
+            self.thumbnailResourceKey = thumbnailKey
+            if let thumbnailKey = thumbnailKey, let cachedImage = Self.thumbnailImageCache.object(forKey: thumbnailKey as NSString) {
+                self.thumbnailView.image = cachedImage
+            } else {
+                self.thumbnailView.image = nil
+            }
+        }
         if let resource = thumbResource {
             self.formatLabel.isHidden = true
-            let signal = context.account.postbox.mediaBox.resourceData(resource, option: .complete(waitUntilFetchStatus: false), attemptSynchronously: false)
-                |> deliverOnMainQueue
-            self.thumbnailDisposable = signal.startStrict(next: { [weak self] data in
-                guard let self = self else { return }
-                if data.complete, let image = UIImage(contentsOfFile: data.path) {
-                    self.thumbnailView.image = image
+            if thumbnailKey.flatMap({ Self.thumbnailImageCache.object(forKey: $0 as NSString) }) == nil && (shouldReloadThumbnail || self.thumbnailDisposable == nil) {
+                let signal = context.account.postbox.mediaBox.resourceData(resource, option: .complete(waitUntilFetchStatus: false), attemptSynchronously: false)
+                    |> deliverOnMainQueue
+                self.thumbnailDisposable = signal.startStrict(next: { [weak self] data in
+                    guard let self = self else { return }
+                    guard self.thumbnailResourceKey == resource.id.stringRepresentation else {
+                        return
+                    }
+                    if data.complete, let image = UIImage(contentsOfFile: data.path) {
+                        Self.thumbnailImageCache.setObject(image, forKey: resource.id.stringRepresentation as NSString)
+                        self.thumbnailView.image = image
+                    }
+                })
+                if let mediaRef = thumbMediaReference {
+                    let resourceRef = MediaResourceReference.media(media: mediaRef, resource: resource)
+                    let fetchSignal = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .image, reference: resourceRef)
+                    self.thumbnailFetchDisposable = fetchSignal.startStrict(next: { _ in })
                 }
-            })
-            if let mediaRef = thumbMediaReference {
-                let resourceRef = MediaResourceReference.media(media: mediaRef, resource: resource)
-                let fetchSignal = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .image, reference: resourceRef)
-                self.thumbnailFetchDisposable = fetchSignal.startStrict(next: { _ in })
             }
         } else if let format = Self.extractFormat(from: item) {
             self.formatLabel.text = format
