@@ -496,9 +496,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             preview.updateLayout(size: previewBounds, transition: .immediate)
         }
 
-        if preview.canPlay && !self.usesEmbeddedPlaybackChrome {
-            self.playButton.isHidden = false
-        }
+        self.refreshPlayButtonVisibility()
         self.bindExpandStatus(preview)
         if let position = position, position > 0.0 {
             Queue.mainQueue().after(0.15) { [weak self, weak preview] in
@@ -551,7 +549,8 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let canPlay = self.previewNode?.canPlay ?? false
         if self.usesEmbeddedPlaybackChrome {
             if self.shouldShowCompactEmbeddedAction && canPlay {
-                self.playButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 48.0, weight: .regular)), for: .normal)
+                let iconName = self.isPlaying ? "pause.circle.fill" : "play.circle.fill"
+                self.playButton.setImage(UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 48.0, weight: .regular)), for: .normal)
                 self.playButton.isHidden = false
             } else {
                 self.playButton.isHidden = true
@@ -574,10 +573,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func playTapped() {
         if self.usesEmbeddedPlaybackChrome {
-            if !self.isExpanded {
-                self.expandTapped()
-            }
-            self.previewNode?.play()
+            self.previewNode?.togglePlayPause()
             return
         }
         guard let preview = self.previewNode, preview.canPlay else { return }
@@ -586,9 +582,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func previewAreaTapped() {
         if self.usesEmbeddedPlaybackChrome {
-            if !self.isExpanded {
-                self.expandTapped()
-            }
+            self.previewNode?.togglePlayPause()
             return
         }
         guard let preview = self.previewNode, preview.canPlay else { return }
