@@ -253,7 +253,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.tabBarNode = MediaBrowserTabBarNode(presentationData: presentationData, onBack: { onBackHandlerPlaceholder?() })
 
         self.listNode = MediaBrowserListNode(context: context, presentationData: presentationData)
-        self.onTVListNode = OnTVSessionsListNode(presentationData: presentationData, accountPeerId: context.account.peerId)
+        self.onTVListNode = OnTVSessionsListNode(context: context, presentationData: presentationData, accountPeerId: context.account.peerId)
         self.chatListNode = MediaBrowserChatListNode(context: context, presentationData: presentationData)
 
         super.init()

@@ -89,6 +89,10 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         return false
     }
 
+    private var shouldShowCompactEmbeddedAction: Bool {
+        return self.usesEmbeddedPlaybackChrome && !self.isExpanded
+    }
+
     init(context: AccountContext, presentationData: PresentationData) {
         self.context = context
         self.presentationData = presentationData
@@ -546,7 +550,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private func refreshPlayButtonVisibility() {
         let canPlay = self.previewNode?.canPlay ?? false
         if self.usesEmbeddedPlaybackChrome {
-            self.playButton.isHidden = true
+            if self.shouldShowCompactEmbeddedAction && canPlay {
+                self.playButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right.circle.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 48.0, weight: .regular)), for: .normal)
+                self.playButton.isHidden = false
+            } else {
+                self.playButton.isHidden = true
+            }
             return
         }
         if self.isExpanded {
@@ -564,13 +573,24 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     @objc private func playTapped() {
-        guard !self.usesEmbeddedPlaybackChrome else { return }
+        if self.usesEmbeddedPlaybackChrome {
+            if !self.isExpanded {
+                self.expandTapped()
+            }
+            self.previewNode?.play()
+            return
+        }
         guard let preview = self.previewNode, preview.canPlay else { return }
         preview.togglePlayPause()
     }
 
     @objc private func previewAreaTapped() {
-        guard !self.usesEmbeddedPlaybackChrome else { return }
+        if self.usesEmbeddedPlaybackChrome {
+            if !self.isExpanded {
+                self.expandTapped()
+            }
+            return
+        }
         guard let preview = self.previewNode, preview.canPlay else { return }
         preview.togglePlayPause()
     }
@@ -789,7 +809,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let overlay = self.isExpanded
         let canPlay = self.previewNode?.canPlay ?? false
 
-        self.playButton.isHidden = self.usesEmbeddedPlaybackChrome || !canPlay || self.isPlaying
+        self.refreshPlayButtonVisibility()
 
         let containerFrame: CGRect
         let cornerRadius: CGFloat

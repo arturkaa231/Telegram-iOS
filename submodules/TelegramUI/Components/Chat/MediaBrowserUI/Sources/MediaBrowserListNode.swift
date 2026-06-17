@@ -3,6 +3,8 @@ import UIKit
 import Display
 import AsyncDisplayKit
 import AccountContext
+import Postbox
+import SwiftSignalKit
 import TelegramCore
 import TelegramPresentationData
 
@@ -372,6 +374,7 @@ private enum OnTVSessionListEntry {
 }
 
 final class OnTVSessionsListNode: ASDisplayNode, UITableViewDataSource, UITableViewDelegate {
+    private let context: AccountContext
     private var presentationData: PresentationData
     private let accountPeerId: EnginePeer.Id
     private let tableView: UITableView
@@ -386,7 +389,8 @@ final class OnTVSessionsListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
     var onSessionSelected: ((OnTVPlaybackContext) -> Void)?
 
-    init(presentationData: PresentationData, accountPeerId: EnginePeer.Id) {
+    init(context: AccountContext, presentationData: PresentationData, accountPeerId: EnginePeer.Id) {
+        self.context = context
         self.presentationData = presentationData
         self.accountPeerId = accountPeerId
         self.tableView = UITableView(frame: .zero, style: .plain)
@@ -516,7 +520,7 @@ final class OnTVSessionsListNode: ASDisplayNode, UITableViewDataSource, UITableV
         let cell = tableView.dequeueReusableCell(withIdentifier: OnTVSessionCell.reuseIdentifier, for: indexPath) as! OnTVSessionCell
         switch self.entries[indexPath.row] {
         case let .resolved(session):
-            cell.configure(with: session, accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId, presentationData: self.presentationData)
+            cell.configure(with: session, accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId, context: self.context, presentationData: self.presentationData)
         case let .unresolved(session):
             cell.configureUnresolved(with: session, accountPeerId: self.accountPeerId, activeSessionId: self.activeSessionId, presentationData: self.presentationData)
         }
@@ -567,7 +571,7 @@ final class OnTVSessionCell: UITableViewCell {
 
     private let cardView = UIView()
     private let stripeView = UIView()
-    private let thumbnailView = UIView()
+    private let thumbnailView = UIImageView()
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let metaLabel = UILabel()
@@ -577,6 +581,9 @@ final class OnTVSessionCell: UITableViewCell {
     private let progressTrack = UIView()
     private let progressFill = UIView()
     private let tapButton = UIButton(type: .custom)
+    private var thumbnailDisposable: Disposable?
+    private var thumbnailFetchDisposable: Disposable?
+    private var thumbnailItemId: EngineMessage.Id?
     var onTap: (() -> Void)?
 
     override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
@@ -593,6 +600,7 @@ final class OnTVSessionCell: UITableViewCell {
 
         self.thumbnailView.layer.cornerRadius = 16.0
         self.thumbnailView.clipsToBounds = true
+        self.thumbnailView.contentMode = .scaleAspectFill
         self.thumbnailView.isUserInteractionEnabled = false
 
         self.iconView.contentMode = .center
@@ -655,6 +663,20 @@ final class OnTVSessionCell: UITableViewCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         self.onTap = nil
+        self.thumbnailDisposable?.dispose()
+        self.thumbnailDisposable = nil
+        self.thumbnailFetchDisposable?.dispose()
+        self.thumbnailFetchDisposable = nil
+        self.thumbnailItemId = nil
+        self.thumbnailView.image = nil
+        self.iconView.isHidden = false
+        self.iconView.image = nil
+        self.iconView.tintColor = nil
+    }
+
+    deinit {
+        self.thumbnailDisposable?.dispose()
+        self.thumbnailFetchDisposable?.dispose()
     }
 
     @objc private func tapped() {
@@ -699,7 +721,7 @@ final class OnTVSessionCell: UITableViewCell {
 
     private var progressValue: CGFloat = 0.0
 
-    func configure(with session: OnTVPlaybackContext, accountPeerId: EnginePeer.Id, activeSessionId: String?, presentationData: PresentationData) {
+    func configure(with session: OnTVPlaybackContext, accountPeerId: EnginePeer.Id, activeSessionId: String?, context: AccountContext, presentationData: PresentationData) {
         let visualStatus = session.visualStatus(accountPeerId: accountPeerId, activeSessionId: activeSessionId)
 
         self.configureCommon(
@@ -709,6 +731,8 @@ final class OnTVSessionCell: UITableViewCell {
             progress: session.progress,
             participantCount: session.participantCount,
             visualStatus: visualStatus,
+            thumbnailItem: session.item,
+            context: context,
             presentationData: presentationData
         )
     }
@@ -729,11 +753,13 @@ final class OnTVSessionCell: UITableViewCell {
             progress: session.progress,
             participantCount: session.participantCount,
             visualStatus: visualStatus,
+            thumbnailItem: nil,
+            context: nil,
             presentationData: presentationData
         )
     }
 
-    private func configureCommon(title: String, meta: String, position: Double, progress: CGFloat, participantCount: Int, visualStatus: OnTVCardVisualStatus, presentationData: PresentationData) {
+    private func configureCommon(title: String, meta: String, position: Double, progress: CGFloat, participantCount: Int, visualStatus: OnTVCardVisualStatus, thumbnailItem: MediaBrowserItem?, context: AccountContext?, presentationData: PresentationData) {
         let theme = presentationData.theme
 
         self.cardView.backgroundColor = theme.list.itemBlocksBackgroundColor.withAlphaComponent(0.68)
@@ -773,12 +799,78 @@ final class OnTVSessionCell: UITableViewCell {
         self.statusLabel.backgroundColor = statusColor
         self.stripeView.backgroundColor = statusColor
         self.progressFill.backgroundColor = statusColor
-        self.thumbnailView.backgroundColor = statusColor.withAlphaComponent(0.16)
-        self.iconView.image = UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .semibold))
-        self.iconView.tintColor = statusColor
+        self.configureThumbnail(item: thumbnailItem, context: context, theme: theme, placeholderIconName: iconName, statusColor: statusColor)
         self.accessibilityLabel = "\(statusText), \(title), \(meta), \(self.positionLabel.text ?? "")"
 
         self.setNeedsLayout()
+    }
+
+    private func configureThumbnail(item: MediaBrowserItem?, context: AccountContext?, theme: PresentationTheme, placeholderIconName: String, statusColor: UIColor) {
+        self.thumbnailDisposable?.dispose()
+        self.thumbnailDisposable = nil
+        self.thumbnailFetchDisposable?.dispose()
+        self.thumbnailFetchDisposable = nil
+        self.thumbnailItemId = item?.messageId
+        self.thumbnailView.image = nil
+        self.thumbnailView.backgroundColor = statusColor.withAlphaComponent(0.16)
+        self.iconView.isHidden = false
+        self.iconView.image = UIImage(systemName: placeholderIconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .semibold))
+        self.iconView.tintColor = statusColor
+
+        guard let item = item, let context = context else {
+            return
+        }
+
+        var thumbResource: MediaResource?
+        var thumbMediaReference: AnyMediaReference?
+        let messageRef = MessageReference(item.message)
+        for media in item.message.media {
+            if let image = media as? TelegramMediaImage, let representation = image.representations.first {
+                thumbResource = representation.resource
+                thumbMediaReference = .message(message: messageRef, media: image)
+                break
+            }
+            if let file = media as? TelegramMediaFile, let preview = file.previewRepresentations.first {
+                thumbResource = preview.resource
+                thumbMediaReference = .message(message: messageRef, media: file)
+                break
+            }
+            if let webpage = media as? TelegramMediaWebpage, case let .Loaded(content) = webpage.content {
+                let webpageRef = WebpageReference(webpage)
+                if let image = content.image, let representation = image.representations.first {
+                    thumbResource = representation.resource
+                    thumbMediaReference = .webPage(webPage: webpageRef, media: image)
+                    break
+                }
+                if let file = content.file, let preview = file.previewRepresentations.first {
+                    thumbResource = preview.resource
+                    thumbMediaReference = .webPage(webPage: webpageRef, media: file)
+                    break
+                }
+            }
+        }
+
+        guard let resource = thumbResource else {
+            return
+        }
+
+        let itemId = item.messageId
+        let signal = context.account.postbox.mediaBox.resourceData(resource, option: .complete(waitUntilFetchStatus: false), attemptSynchronously: false)
+        |> deliverOnMainQueue
+        self.thumbnailDisposable = signal.startStrict(next: { [weak self] data in
+            guard let self = self, self.thumbnailItemId == itemId else {
+                return
+            }
+            if data.complete, let image = UIImage(contentsOfFile: data.path) {
+                self.thumbnailView.image = image
+                self.iconView.isHidden = true
+            }
+        })
+        if let mediaRef = thumbMediaReference {
+            let resourceRef = MediaResourceReference.media(media: mediaRef, resource: resource)
+            let fetchSignal = fetchedMediaResource(mediaBox: context.account.postbox.mediaBox, userLocation: .other, userContentType: .image, reference: resourceRef)
+            self.thumbnailFetchDisposable = fetchSignal.startStrict(next: { _ in })
+        }
     }
 
     func flashLockedStripe() {
