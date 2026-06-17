@@ -344,8 +344,9 @@ final class OnTVSessionCoordinator {
         }
         self.lastSavedLocalProgressAt = now
         self.lastSavedLocalProgressPosition = position
-        self.store.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt)
-        self.onLocalProgressSaved?()
+        self.store.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt, completion: { [weak self] in
+            self?.onLocalProgressSaved?()
+        })
     }
 
     private func handleRemotePlayerEvent(_ event: OnTVPlayerEvent) {

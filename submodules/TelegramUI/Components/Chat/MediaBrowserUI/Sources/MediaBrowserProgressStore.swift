@@ -5,6 +5,10 @@ import SwiftSignalKit
 import TelegramCore
 
 struct MediaBrowserProgressRecord: Codable, Equatable {
+    private static let currentSchemaVersion: Int32 = 1
+    private static let minimumVisiblePosition: Double = 2.0
+    private static let minimumVisibleProgress: Double = 0.01
+
     let schemaVersion: Int32
     let chatId: Int64
     let fileId: String
@@ -40,11 +44,50 @@ struct MediaBrowserProgressRecord: Codable, Equatable {
     }
 
     var hasVisibleProgress: Bool {
-        return self.position >= 2.0 || self.progress >= 0.01
+        return self.position >= Self.minimumVisiblePosition || self.progress >= Self.minimumVisibleProgress
     }
 
     var normalizedProgress: Double {
         return max(0.0, min(1.0, self.progress))
+    }
+
+    static func make(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?) -> MediaBrowserProgressRecord? {
+        let normalizedPosition = max(0.0, position)
+        let normalizedProgress = Self.normalizedProgress(progress)
+        guard normalizedPosition >= Self.minimumVisiblePosition || normalizedProgress >= Self.minimumVisibleProgress || endedAt != nil else {
+            return nil
+        }
+
+        return MediaBrowserProgressRecord(
+            schemaVersion: Self.currentSchemaVersion,
+            chatId: chatId.toInt64(),
+            fileId: MediaBrowserProgressStore.fileId(for: item.messageId),
+            position: normalizedPosition,
+            progress: normalizedProgress,
+            updatedAt: Date().timeIntervalSince1970,
+            endedAt: endedAt?.timeIntervalSince1970,
+            fileName: item.fileName,
+            fileSize: item.fileSize,
+            mediaType: Self.mediaTypeString(for: item.mediaType),
+            timestamp: item.timestamp
+        )
+    }
+
+    private static func normalizedProgress(_ progress: CGFloat) -> Double {
+        return Double(max(0.0, min(1.0, progress)))
+    }
+
+    private static func mediaTypeString(for mediaType: MediaBrowserMediaType) -> String {
+        switch mediaType {
+        case .photo:
+            return "photo"
+        case .video:
+            return "video"
+        case .file:
+            return "file"
+        case .audio:
+            return "audio"
+        }
     }
 
     func remoteContext() -> OnTVRemotePlaybackContext {
@@ -74,8 +117,6 @@ final class MediaBrowserProgressStore {
     private static let collectionId: ItemCacheCollectionId = 120
     private static let schemaVersion: Int32 = 1
     private static let maxRecordsPerChat = 100
-    private static let minimumVisiblePosition: Double = 2.0
-    private static let minimumVisibleProgress: Double = 0.01
 
     private let postbox: Postbox
 
@@ -104,7 +145,7 @@ final class MediaBrowserProgressStore {
             guard let record = records.first(where: { $0.fileId == fileId }) else {
                 return nil
             }
-            guard record.position >= Self.minimumVisiblePosition || record.progress >= Self.minimumVisibleProgress else {
+            guard record.hasVisibleProgress else {
                 return nil
             }
             return max(0.0, record.position)
@@ -115,30 +156,14 @@ final class MediaBrowserProgressStore {
         })
     }
 
-    func upsert(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?) {
-        let normalizedPosition = max(0.0, position)
-        let normalizedProgress = Self.normalizedProgress(progress)
-        guard normalizedPosition >= Self.minimumVisiblePosition || normalizedProgress >= Self.minimumVisibleProgress || endedAt != nil else {
+    func upsert(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
+        guard let record = MediaBrowserProgressRecord.make(item: item, chatId: chatId, position: position, progress: progress, endedAt: endedAt) else {
             return
         }
-
-        let record = MediaBrowserProgressRecord(
-            schemaVersion: Self.schemaVersion,
-            chatId: chatId.toInt64(),
-            fileId: Self.fileId(for: item.messageId),
-            position: normalizedPosition,
-            progress: normalizedProgress,
-            updatedAt: Date().timeIntervalSince1970,
-            endedAt: endedAt?.timeIntervalSince1970,
-            fileName: item.fileName,
-            fileSize: item.fileSize,
-            mediaType: Self.mediaTypeString(for: item.mediaType),
-            timestamp: item.timestamp
-        )
-        self.upsert(record: record)
+        self.upsert(record: record, completion: completion)
     }
 
-    func upsert(context: OnTVPlaybackContext) {
+    func upsert(context: OnTVPlaybackContext, completion: (() -> Void)? = nil) {
         let record = MediaBrowserProgressRecord(
             schemaVersion: Self.schemaVersion,
             chatId: context.chatId.toInt64(),
@@ -152,10 +177,10 @@ final class MediaBrowserProgressStore {
             mediaType: Self.mediaTypeString(for: context.item.mediaType),
             timestamp: context.item.timestamp
         )
-        self.upsert(record: record)
+        self.upsert(record: record, completion: completion)
     }
 
-    func upsert(record: MediaBrowserProgressRecord) {
+    func upsert(record: MediaBrowserProgressRecord, completion: (() -> Void)? = nil) {
         let entryId = Self.entryId(chatId: EnginePeer.Id(record.chatId))
         let signal = self.postbox.transaction { transaction -> Void in
             var records = transaction.retrieveItemCacheEntry(id: entryId)?.get(MediaBrowserProgressRecordList.self)?.records ?? []
@@ -166,7 +191,9 @@ final class MediaBrowserProgressStore {
                 transaction.putItemCacheEntry(id: entryId, entry: entry)
             }
         }
-        _ = signal.startStrict()
+        _ = (signal |> deliverOnMainQueue).startStrict(completed: {
+            completion?()
+        })
     }
 
     func mergeRemoteContexts(_ contexts: [OnTVPlaybackContext], chatId: EnginePeer.Id) {

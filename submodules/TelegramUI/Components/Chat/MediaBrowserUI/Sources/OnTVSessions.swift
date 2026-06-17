@@ -160,7 +160,7 @@ protocol OnTVSessionsStore: AnyObject {
     func leave(_ sessionId: String) -> OnTVPlaybackContext?
     func activate(_ sessionId: String) -> OnTVSessionActivation?
     func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat)
-    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?)
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)?)
     func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void)
     func sendPlayerEvent(_ event: OnTVPlayerEvent)
 }
@@ -415,8 +415,12 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         }
     }
 
-    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?) {
-        self.progressStore?.upsert(item: item, chatId: self.peerId, position: position, progress: progress, endedAt: endedAt)
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
+        if let progressStore = self.progressStore {
+            progressStore.upsert(item: item, chatId: self.peerId, position: position, progress: progress, endedAt: endedAt, completion: completion)
+        } else {
+            completion?()
+        }
         var sessions = self.sessionsByPeer[self.peerId] ?? []
         if let index = sessions.firstIndex(where: { $0.fileId == item.messageId }) {
             sessions[index].item = item
@@ -725,8 +729,8 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
         self.localStore.updatePlaybackProgress(sessionId: sessionId, position: position, progress: progress)
     }
 
-    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?) {
-        self.localStore.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt)
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
+        self.localStore.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt, completion: completion)
     }
 
     func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void) {
