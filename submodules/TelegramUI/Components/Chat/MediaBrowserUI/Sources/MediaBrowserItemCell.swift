@@ -80,6 +80,23 @@ final class MediaBrowserItemCell: UITableViewCell {
         return label
     }()
 
+    private let progressTrackView: UIView = {
+        let view = UIView()
+        view.layer.cornerRadius = 1.5
+        view.clipsToBounds = true
+        view.isHidden = true
+        return view
+    }()
+
+    private let progressFillView: UIView = {
+        let view = UIView()
+        view.layer.cornerRadius = 1.5
+        view.clipsToBounds = true
+        return view
+    }()
+
+    private var visibleProgress: Double?
+
     private let highlightBackgroundView: UIView = {
         let v = UIView()
         v.isHidden = true
@@ -101,6 +118,8 @@ final class MediaBrowserItemCell: UITableViewCell {
         contentView.addSubview(senderLabel)
         contentView.addSubview(timeLabel)
         contentView.addSubview(sizeLabel)
+        contentView.addSubview(progressTrackView)
+        progressTrackView.addSubview(progressFillView)
     }
 
     func setItemHighlighted(_ flag: Bool, theme: PresentationTheme) {
@@ -120,6 +139,9 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.thumbnailFetchDisposable = nil
         self.thumbnailView.image = nil
         self.highlightBackgroundView.isHidden = true
+        self.visibleProgress = nil
+        self.progressTrackView.isHidden = true
+        self.progressFillView.frame = .zero
     }
 
     deinit {
@@ -183,9 +205,19 @@ final class MediaBrowserItemCell: UITableViewCell {
         senderLabel.frame = CGRect(x: senderLabelLeft, y: secondRowY, width: max(40.0, senderRight - senderLabelLeft), height: senderHeight)
         timeLabel.frame = CGRect(x: timeX, y: secondRowY, width: timeWidth, height: senderHeight)
         sizeLabel.frame = CGRect(x: sizeX, y: secondRowY, width: sizeWidth, height: senderHeight)
+
+        if let visibleProgress = self.visibleProgress {
+            let progressY = min(h - 8.0, secondRowY + senderHeight + 6.0)
+            let progressFrame = CGRect(x: textLeft, y: progressY, width: fullTextWidth, height: 3.0)
+            self.progressTrackView.frame = progressFrame
+            self.progressFillView.frame = CGRect(x: 0.0, y: 0.0, width: progressFrame.width * CGFloat(visibleProgress), height: progressFrame.height)
+        } else {
+            self.progressTrackView.frame = .zero
+            self.progressFillView.frame = .zero
+        }
     }
 
-    func configure(with item: MediaBrowserItem, context: AccountContext, presentationData: PresentationData) {
+    func configure(with item: MediaBrowserItem, progressRecord: MediaBrowserProgressRecord?, context: AccountContext, presentationData: PresentationData) {
         let theme = presentationData.theme
 
         self.fileNameLabel.text = item.fileName.isEmpty ? "Без названия" : item.fileName
@@ -210,14 +242,32 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.timeLabel.text = mediaBrowserDateString(item.timestamp, locale: locale)
         self.timeLabel.textColor = theme.list.itemSecondaryTextColor
 
+        let visibleProgressRecord = progressRecord?.hasVisibleProgress == true ? progressRecord : nil
         if item.fileSize > 0 {
-            self.sizeLabel.text = Self.formatFileSize(item.fileSize)
+            if let visibleProgressRecord = visibleProgressRecord {
+                self.sizeLabel.text = "\(Self.formatFileSize(item.fileSize)) · \(Self.formatProgress(visibleProgressRecord))"
+            } else {
+                self.sizeLabel.text = Self.formatFileSize(item.fileSize)
+            }
+            self.sizeLabel.isHidden = false
+        } else if let visibleProgressRecord = visibleProgressRecord {
+            self.sizeLabel.text = Self.formatProgress(visibleProgressRecord)
             self.sizeLabel.isHidden = false
         } else {
             self.sizeLabel.text = ""
             self.sizeLabel.isHidden = true
         }
         self.sizeLabel.textColor = theme.list.itemSecondaryTextColor
+
+        if let visibleProgressRecord = visibleProgressRecord, visibleProgressRecord.normalizedProgress >= 0.01 {
+            self.visibleProgress = visibleProgressRecord.normalizedProgress
+            self.progressTrackView.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
+            self.progressFillView.backgroundColor = theme.list.itemAccentColor
+            self.progressTrackView.isHidden = false
+        } else {
+            self.visibleProgress = nil
+            self.progressTrackView.isHidden = true
+        }
 
         let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
         self.thumbnailView.backgroundColor = placeholderColor
@@ -336,6 +386,21 @@ final class MediaBrowserItemCell: UITableViewCell {
             return String(format: "%.2f Мб", Double(bytes) / (1024.0 * 1024.0))
         } else {
             return String(format: "%.2f Гб", Double(bytes) / (1024.0 * 1024.0 * 1024.0))
+        }
+    }
+
+    private static func formatProgress(_ record: MediaBrowserProgressRecord) -> String {
+        let progress = record.normalizedProgress
+        if progress >= 0.01 {
+            return "\(max(1, min(100, Int(round(progress * 100.0)))))%"
+        }
+        let seconds = max(0, Int(record.position.rounded()))
+        if seconds >= 3600 {
+            return String(format: "%d:%02d:%02d", seconds / 3600, (seconds / 60) % 60, seconds % 60)
+        } else if seconds >= 60 {
+            return String(format: "%d:%02d", seconds / 60, seconds % 60)
+        } else {
+            return "\(seconds)с"
         }
     }
 }

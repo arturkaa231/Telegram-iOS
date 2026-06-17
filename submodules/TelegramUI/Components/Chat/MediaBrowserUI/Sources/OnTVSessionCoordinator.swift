@@ -55,6 +55,7 @@ final class OnTVSessionCoordinator {
     var onOpenSession: ((OnTVPlaybackContext, Bool) -> Void)?
     var onApplyRemotePlaybackAction: ((Double, CGFloat, Bool) -> Void)?
     var onApplyRemotePlaybackState: ((Double, CGFloat) -> Void)?
+    var onLocalProgressSaved: (() -> Void)?
     var currentPlaybackState: (() -> (position: Double, progress: CGFloat))?
     var currentPlaybackIsPlaying: (() -> Bool)?
     var currentDisplayedItem: (() -> MediaBrowserItem?)?
@@ -344,6 +345,7 @@ final class OnTVSessionCoordinator {
         self.lastSavedLocalProgressAt = now
         self.lastSavedLocalProgressPosition = position
         self.store.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt)
+        self.onLocalProgressSaved?()
     }
 
     private func handleRemotePlayerEvent(_ event: OnTVPlayerEvent) {

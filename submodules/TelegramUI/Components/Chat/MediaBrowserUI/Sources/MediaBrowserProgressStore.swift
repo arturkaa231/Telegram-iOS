@@ -39,6 +39,14 @@ struct MediaBrowserProgressRecord: Codable, Equatable {
         return "local-progress-\(self.chatId)-\(self.fileId)"
     }
 
+    var hasVisibleProgress: Bool {
+        return self.position >= 2.0 || self.progress >= 0.01
+    }
+
+    var normalizedProgress: Double {
+        return max(0.0, min(1.0, self.progress))
+    }
+
     func remoteContext() -> OnTVRemotePlaybackContext {
         return OnTVRemotePlaybackContext(
             sessionId: self.sessionId,

@@ -195,6 +195,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var currentItemIndex: Int?
     private var mediaLoadingState: MediaBrowserLoadingState = .idle
     private var pendingOnTVResolverLoad: Bool = false
+    private var lastProgressRecordsReloadAt: Double = 0.0
+    private var progressRecordsReloadScheduled: Bool = false
 
     enum Mode {
         case files
@@ -482,6 +484,38 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         )
     }
 
+    private func scheduleProgressRecordsReload(immediate: Bool = false) {
+        let now = Date().timeIntervalSince1970
+        let minimumInterval: Double = 0.8
+        if immediate || now - self.lastProgressRecordsReloadAt >= minimumInterval {
+            self.reloadVisibleProgressRecords()
+            return
+        }
+        guard !self.progressRecordsReloadScheduled else {
+            return
+        }
+        self.progressRecordsReloadScheduled = true
+        let delay = max(0.1, minimumInterval - (now - self.lastProgressRecordsReloadAt))
+        Queue.mainQueue().after(delay) { [weak self] in
+            guard let self = self else {
+                return
+            }
+            self.progressRecordsReloadScheduled = false
+            self.reloadVisibleProgressRecords()
+        }
+    }
+
+    private func reloadVisibleProgressRecords() {
+        let loadingPeerId = self.peerId
+        self.lastProgressRecordsReloadAt = Date().timeIntervalSince1970
+        self.progressStore.load(chatId: loadingPeerId) { [weak self] records in
+            guard let self = self, self.peerId == loadingPeerId else {
+                return
+            }
+            self.listNode.updateProgressRecords(records)
+        }
+    }
+
     private func navigateNeighbor(_ offset: Int) {
         guard let idx = self.currentItemIndex else { return }
         let newIdx = idx + offset
@@ -528,6 +562,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.peerId = peerId
         self.currentItemIndex = nil
         self.loadedItems = []
+        self.listNode.updateProgressRecords([])
         self.dataSource.switchPeer(peerId)
         self.mode = .files
         if let layout = self.validLayout {
@@ -588,6 +623,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.loadedItems = items
             self.onTVSessionCoordinator.registerLoadedItems(items)
             self.listNode.updateItems(items)
+            self.scheduleProgressRecordsReload(immediate: true)
             self.listNode.setAvailableSenders(self.dataSource.uniqueSenders())
             if let displayedItem = self.playerNode.displayedItem {
                 self.currentItemIndex = items.firstIndex(where: { $0.messageId == displayedItem.messageId })
@@ -610,7 +646,9 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
 
         self.onTVSessionCoordinator.onSessionsUpdated = { [weak self] sessions in
-            self?.onTVListNode.updateSessions(sessions)
+            guard let self = self else { return }
+            self.onTVListNode.updateSessions(sessions)
+            self.scheduleProgressRecordsReload()
         }
         self.onTVSessionCoordinator.onUnresolvedSessionsUpdated = { [weak self] sessions in
             self?.onTVListNode.updateUnresolvedSessions(sessions)
@@ -653,6 +691,9 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
         self.onTVSessionCoordinator.onApplyRemotePlaybackState = { [weak self] position, progress in
             self?.playerNode.applyRemotePlaybackState(position: position, progress: progress)
+        }
+        self.onTVSessionCoordinator.onLocalProgressSaved = { [weak self] in
+            self?.scheduleProgressRecordsReload()
         }
         self.onTVSessionCoordinator.currentPlaybackState = { [weak self] in
             guard let self = self else {

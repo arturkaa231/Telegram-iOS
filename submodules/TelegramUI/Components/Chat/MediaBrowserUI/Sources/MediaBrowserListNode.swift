@@ -15,6 +15,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
     private let retryButton: UIButton
 
     private var items: [MediaBrowserItem] = []
+    private var progressRecordsByFileId: [String: MediaBrowserProgressRecord] = [:]
     private var loadingState: MediaBrowserLoadingState = .idle
     private var selectedItemIndex: Int?
 
@@ -285,6 +286,15 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         self.tableView.reloadData()
     }
 
+    func updateProgressRecords(_ records: [MediaBrowserProgressRecord]) {
+        var progressRecordsByFileId: [String: MediaBrowserProgressRecord] = [:]
+        for record in records where record.hasVisibleProgress {
+            progressRecordsByFileId[record.fileId] = record
+        }
+        self.progressRecordsByFileId = progressRecordsByFileId
+        self.tableView.reloadData()
+    }
+
     func updateLoadingState(_ state: MediaBrowserLoadingState) {
         self.loadingState = state
         switch state {
@@ -322,7 +332,8 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: MediaBrowserItemCell.reuseIdentifier, for: indexPath) as! MediaBrowserItemCell
         let item = self.items[indexPath.row]
-        cell.configure(with: item, context: self.context, presentationData: self.presentationData)
+        let progressRecord = self.progressRecordsByFileId[MediaBrowserProgressStore.fileId(for: item.messageId)]
+        cell.configure(with: item, progressRecord: progressRecord, context: self.context, presentationData: self.presentationData)
         cell.setItemHighlighted(indexPath.row == self.selectedItemIndex, theme: self.presentationData.theme)
         return cell
     }
