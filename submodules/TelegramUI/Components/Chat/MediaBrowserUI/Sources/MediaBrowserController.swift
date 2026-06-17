@@ -184,6 +184,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private let dataSource: MediaBrowserDataSource
     private let onTVSessionCoordinator: OnTVSessionCoordinator
+    private let progressStore: MediaBrowserProgressStore
 
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
@@ -219,6 +220,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.playerNode = MediaBrowserPlayerNode(context: context, presentationData: presentationData)
 
         self.dataSource = MediaBrowserDataSource(context: context, peerId: peerId)
+        self.progressStore = MediaBrowserProgressStore(postbox: context.account.postbox)
         let syncConfiguration = Self.onTVSyncConfiguration()
         let onTVSessionsStore: OnTVSessionsStore
         if let endpoint = syncConfiguration.endpoint {
@@ -236,11 +238,12 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                             service.token(forChatScope: chatScope, completion: completion)
                         }
                     }
-                )
+                ),
+                progressStore: self.progressStore
             )
         } else {
             NSLog("[MultigramOnTV] Using local store peerId=%lld accountPeerId=%lld", peerId.toInt64(), context.account.peerId.toInt64())
-            onTVSessionsStore = LocalOnTVSessionsStore(peerId: peerId, accountPeerId: context.account.peerId)
+            onTVSessionsStore = LocalOnTVSessionsStore(peerId: peerId, accountPeerId: context.account.peerId, progressStore: self.progressStore)
         }
         self.onTVSessionCoordinator = OnTVSessionCoordinator(store: onTVSessionsStore, accountPeerId: context.account.peerId)
 
@@ -324,6 +327,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     deinit {
+        self.flushCurrentLocalProgress()
         self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
     }
 
@@ -437,18 +441,45 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
         if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < self.loadedItems.count {
             let item = self.loadedItems[currentItemIndex]
-            self.playerNode.showItem(item)
+            self.showItem(item)
             self.listNode.setSelectedItemIndex(currentItemIndex)
             return item
         }
         if let firstItem = self.loadedItems.first {
             self.currentItemIndex = 0
-            self.playerNode.showItem(firstItem)
+            self.showItem(firstItem)
             self.listNode.setSelectedItemIndex(0)
             return firstItem
         }
         self.onTVListNode.showNotice("Сначала выбери файл")
         return nil
+    }
+
+    private func showItem(_ item: MediaBrowserItem, explicitPosition: Double? = nil) {
+        if let explicitPosition = explicitPosition {
+            self.playerNode.showItem(item, seekTo: explicitPosition)
+            return
+        }
+
+        self.playerNode.showItem(item)
+        self.onTVSessionCoordinator.savedPosition(for: item) { [weak self] position in
+            guard let self = self, let position = position else {
+                return
+            }
+            guard self.playerNode.displayedItem?.messageId == item.messageId else {
+                return
+            }
+            self.playerNode.seekToSavedPosition(position, for: item)
+        }
+    }
+
+    private func flushCurrentLocalProgress(endedAt: Date? = nil) {
+        self.onTVSessionCoordinator.flushLocalProgress(
+            displayedItem: self.playerNode.displayedItem,
+            position: self.playerNode.currentPlaybackPosition(),
+            progress: self.playerNode.currentPlaybackProgress(),
+            endedAt: endedAt
+        )
     }
 
     private func navigateNeighbor(_ offset: Int) {
@@ -463,7 +494,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         )
         let nextItem = self.loadedItems[newIdx]
         self.currentItemIndex = newIdx
-        self.playerNode.showItem(nextItem)
+        self.showItem(nextItem, explicitPosition: shouldCarryPulse ? 0.0 : nil)
         self.listNode.setSelectedItemIndex(newIdx)
         if shouldCarryPulse {
             _ = self.onTVSessionCoordinator.startPulse(item: nextItem, position: 0.0, progress: 0.0)
@@ -483,6 +514,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private func switchToChatPicker() {
         guard self.mode != .chatPicker else { return }
+        self.flushCurrentLocalProgress()
         self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
         self.mode = .chatPicker
         if let layout = self.validLayout {
@@ -491,6 +523,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     private func switchToFiles(peerId: EnginePeer.Id) {
+        self.flushCurrentLocalProgress()
         self.onTVSessionCoordinator.switchPeer(peerId)
         self.peerId = peerId
         self.currentItemIndex = nil
@@ -522,6 +555,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     @objc private func dimTapped() {
+        self.flushCurrentLocalProgress()
         self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
         self.dismiss()
     }
@@ -558,10 +592,10 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             if let displayedItem = self.playerNode.displayedItem {
                 self.currentItemIndex = items.firstIndex(where: { $0.messageId == displayedItem.messageId })
             } else if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < items.count {
-                self.playerNode.showItem(items[currentItemIndex])
+                self.showItem(items[currentItemIndex])
             } else if let first = items.first {
                 self.currentItemIndex = 0
-                self.playerNode.showItem(first)
+                self.showItem(first)
             } else {
                 self.currentItemIndex = nil
             }
@@ -611,7 +645,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.onTVSessionCoordinator.onOpenSession = { [weak self] context, _ in
             guard let self = self else { return }
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == context.fileId })
-            self.playerNode.showItem(context.item, seekTo: context.position)
+            self.showItem(context.item, explicitPosition: context.position)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
         }
         self.onTVSessionCoordinator.onApplyRemotePlaybackAction = { [weak self] position, progress, isPlaying in
@@ -632,6 +666,9 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.onTVSessionCoordinator.currentPlaybackIsPlaying = { [weak self] in
             return self?.playerNode.isPlaybackActive() ?? false
         }
+        self.onTVSessionCoordinator.currentDisplayedItem = { [weak self] in
+            return self?.playerNode.displayedItem
+        }
 
         self.listNode.onNearEnd = { [weak self] in
             self?.dataSource.loadNextBatch()
@@ -650,7 +687,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                 progress: self.playerNode.currentPlaybackProgress()
             )
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == item.messageId })
-            self.playerNode.showItem(item)
+            self.showItem(item, explicitPosition: shouldCarryPulse ? 0.0 : nil)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
             if shouldCarryPulse {
                 _ = self.onTVSessionCoordinator.startPulse(item: item, position: 0.0, progress: 0.0)

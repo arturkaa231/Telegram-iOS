@@ -14,6 +14,8 @@ final class OnTVSessionCoordinator {
     private var lastSentPlaybackIsPlaying: Bool?
     private var lastLocalProgressUpdateAt: Double = 0.0
     private var lastLocalProgressPosition: Double = 0.0
+    private var lastSavedLocalProgressAt: Double = 0.0
+    private var lastSavedLocalProgressPosition: Double = 0.0
     private var lastRemoteStateSentAt: Double = 0.0
     private var lastRemoteStatePosition: Double = 0.0
     private var pendingHolderSessionId: String?
@@ -55,6 +57,7 @@ final class OnTVSessionCoordinator {
     var onApplyRemotePlaybackState: ((Double, CGFloat) -> Void)?
     var currentPlaybackState: (() -> (position: Double, progress: CGFloat))?
     var currentPlaybackIsPlaying: (() -> Bool)?
+    var currentDisplayedItem: (() -> MediaBrowserItem?)?
 
     init(store: OnTVSessionsStore, accountPeerId: EnginePeer.Id) {
         self.store = store
@@ -154,6 +157,21 @@ final class OnTVSessionCoordinator {
     }
 
     func handlePlaybackStatusChanged(_ status: MediaPreviewPlaybackStatus) {
+        switch status {
+        case .paused:
+            if let item = self.currentDisplayedItem?() {
+                let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+                self.saveLocalProgressIfNeeded(item: item, position: state.position, progress: state.progress, force: true, endedAt: nil)
+            }
+        case .ended:
+            if let item = self.currentDisplayedItem?() {
+                let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+                self.saveLocalProgressIfNeeded(item: item, position: state.position, progress: state.progress, force: true, endedAt: Date())
+            }
+        case .idle, .loading, .playing, .error:
+            break
+        }
+
         if self.activeSessionIsHolder {
             switch status {
             case .playing:
@@ -194,6 +212,10 @@ final class OnTVSessionCoordinator {
     }
 
     func handlePlaybackPositionUpdated(position: Double, progress: CGFloat, isPlaying: Bool) {
+        if let item = self.currentDisplayedItem?() {
+            self.saveLocalProgressIfNeeded(item: item, position: position, progress: progress, force: false, endedAt: nil)
+        }
+
         guard let sessionId = self.activeSessionId else {
             return
         }
@@ -211,6 +233,17 @@ final class OnTVSessionCoordinator {
             self.lastRemoteStatePosition = position
             self.store.sendPlayerEvent(.state(sessionId: sessionId, position: position, progress: progress))
         }
+    }
+
+    func flushLocalProgress(displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat, endedAt: Date? = nil) {
+        guard let displayedItem = displayedItem else {
+            return
+        }
+        self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: endedAt)
+    }
+
+    func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void) {
+        self.store.savedPosition(for: item, completion: completion)
     }
 
     func activateSession(_ session: OnTVPlaybackContext, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
@@ -263,6 +296,8 @@ final class OnTVSessionCoordinator {
         self.lastSentPlaybackIsPlaying = nil
         self.lastLocalProgressUpdateAt = 0.0
         self.lastLocalProgressPosition = 0.0
+        self.lastSavedLocalProgressAt = 0.0
+        self.lastSavedLocalProgressPosition = 0.0
         self.lastRemoteStateSentAt = 0.0
         self.lastRemoteStatePosition = 0.0
         self.onActiveHeldSessionChanged?(isHolder ? sessionId : nil)
@@ -275,6 +310,8 @@ final class OnTVSessionCoordinator {
         self.lastSentPlaybackIsPlaying = nil
         self.lastLocalProgressUpdateAt = 0.0
         self.lastLocalProgressPosition = 0.0
+        self.lastSavedLocalProgressAt = 0.0
+        self.lastSavedLocalProgressPosition = 0.0
         self.lastRemoteStateSentAt = 0.0
         self.lastRemoteStatePosition = 0.0
         self.pendingHolderSessionId = nil
@@ -297,6 +334,16 @@ final class OnTVSessionCoordinator {
             progress: playbackState.progress,
             isPlaying: isPlaying
         ))
+    }
+
+    private func saveLocalProgressIfNeeded(item: MediaBrowserItem, position: Double, progress: CGFloat, force: Bool, endedAt: Date?) {
+        let now = Date().timeIntervalSince1970
+        if !force && now - self.lastSavedLocalProgressAt < 1.5 && abs(position - self.lastSavedLocalProgressPosition) < 2.0 {
+            return
+        }
+        self.lastSavedLocalProgressAt = now
+        self.lastSavedLocalProgressPosition = position
+        self.store.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt)
     }
 
     private func handleRemotePlayerEvent(_ event: OnTVPlayerEvent) {

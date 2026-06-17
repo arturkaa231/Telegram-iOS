@@ -508,6 +508,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     }
 
+    func seekToSavedPosition(_ position: Double, for item: MediaBrowserItem) {
+        guard self.currentItem?.messageId == item.messageId else {
+            return
+        }
+        self.seekPreview(to: position, report: false)
+    }
+
     private func handlePreviewStatus(_ status: MediaPreviewPlaybackStatus) {
         self.onPlaybackStatusChanged?(status)
         switch status {
