@@ -26,14 +26,30 @@ enum MediaBrowserURLClassifier {
     }
 
     static func displayTitle(for url: URL, fallback: String) -> String {
-        if let videoId = self.youtubeVideoId(from: url) {
-            return "YouTube \(videoId)"
+        if self.youtubeVideoId(from: url) != nil {
+            return fallback
         }
         let lastPath = url.lastPathComponent
         if !lastPath.isEmpty && lastPath != "/" {
             return lastPath
         }
         return url.host ?? fallback
+    }
+
+    static func displayTitle(for source: MediaBrowserPlayableSource, in message: Message, fallback: String) -> String {
+        if let title = self.webpageTitle(in: message) {
+            return title
+        }
+        switch source {
+        case let .youtube(_, url):
+            return self.displayTitle(for: url, fallback: fallback)
+        case let .directStream(url):
+            return self.displayTitle(for: url, fallback: fallback)
+        case let .unsupportedUrl(url):
+            return self.displayTitle(for: url, fallback: fallback)
+        case .telegramMedia:
+            return fallback
+        }
     }
 
     private static func candidateURLStrings(in message: Message) -> [String] {
@@ -78,6 +94,39 @@ enum MediaBrowserURLClassifier {
         }
 
         return result.filter { !$0.isEmpty }
+    }
+
+    private static func webpageTitle(in message: Message) -> String? {
+        for media in message.media {
+            guard let webpage = media as? TelegramMediaWebpage else {
+                continue
+            }
+            guard case let .Loaded(content) = webpage.content else {
+                continue
+            }
+            if let title = self.normalizedDisplayTitle(content.title) {
+                return title
+            }
+        }
+        return nil
+    }
+
+    private static func normalizedDisplayTitle(_ value: String?) -> String? {
+        guard let value = value else {
+            return nil
+        }
+        let cleaned = value
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+        guard !cleaned.isEmpty else {
+            return nil
+        }
+        let maxLength = 120
+        if cleaned.count <= maxLength {
+            return cleaned
+        }
+        return "\(cleaned.prefix(maxLength))..."
     }
 
     private static func normalizedURL(from value: String) -> URL? {

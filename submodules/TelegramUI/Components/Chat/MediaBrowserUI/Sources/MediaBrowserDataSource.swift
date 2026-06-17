@@ -302,12 +302,12 @@ final class MediaBrowserDataSource {
             fileSize = 0
             mediaType = .video
             switch externalSource {
-            case let .youtube(_, url):
-                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "YouTube")
-            case let .directStream(url):
-                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "Stream")
-            case let .unsupportedUrl(url):
-                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "Link")
+            case .youtube:
+                fileName = MediaBrowserURLClassifier.displayTitle(for: externalSource, in: message, fallback: "YouTube")
+            case .directStream:
+                fileName = MediaBrowserURLClassifier.displayTitle(for: externalSource, in: message, fallback: "Stream")
+            case .unsupportedUrl:
+                fileName = MediaBrowserURLClassifier.displayTitle(for: externalSource, in: message, fallback: "Link")
             case .telegramMedia:
                 break
             }
