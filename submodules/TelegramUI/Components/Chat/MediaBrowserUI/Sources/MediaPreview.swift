@@ -62,6 +62,8 @@ public final class MediaPreviewProviderRegistry {
     private let fallback: MediaPreviewProvider = UnsupportedMediaPreviewProvider()
 
     public init() {
+        self.register(YouTubeMediaPreviewProvider())
+        self.register(DirectStreamMediaPreviewProvider())
         self.register(VideoMediaPreviewProvider())
         self.register(AudioMediaPreviewProvider())
         self.register(ImageMediaPreviewProvider())

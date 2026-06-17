@@ -241,6 +241,19 @@ final class MediaBrowserItemCell: UITableViewCell {
                 thumbMediaReference = .message(message: messageRef, media: file)
                 break
             }
+            if let webpage = media as? TelegramMediaWebpage, case let .Loaded(content) = webpage.content {
+                let webpageRef = WebpageReference(webpage)
+                if let image = content.image, let representation = image.representations.first {
+                    thumbResource = representation.resource
+                    thumbMediaReference = .webPage(webPage: webpageRef, media: image)
+                    break
+                }
+                if let file = content.file, let preview = file.previewRepresentations.first {
+                    thumbResource = preview.resource
+                    thumbMediaReference = .webPage(webPage: webpageRef, media: file)
+                    break
+                }
+            }
         }
         if let resource = thumbResource {
             self.formatLabel.isHidden = true
@@ -283,6 +296,16 @@ final class MediaBrowserItemCell: UITableViewCell {
     }
 
     private static func extractFormat(from item: MediaBrowserItem) -> String? {
+        switch item.playableSource {
+        case .youtube:
+            return "YT"
+        case .directStream:
+            return "STREAM"
+        case .unsupportedUrl:
+            return "LINK"
+        case .telegramMedia:
+            break
+        }
         for media in item.message.media {
             if let file = media as? TelegramMediaFile {
                 if let name = file.fileName, let dotIndex = name.lastIndex(of: ".") {

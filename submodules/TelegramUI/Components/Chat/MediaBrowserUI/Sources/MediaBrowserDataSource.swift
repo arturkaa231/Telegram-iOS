@@ -40,6 +40,7 @@ public struct MediaBrowserItem {
     public let timestamp: Int32
     public let fileSize: Int64
     public let mediaType: MediaBrowserMediaType
+    public let playableSource: MediaBrowserPlayableSource
     public let message: Message
 }
 
@@ -48,6 +49,22 @@ public enum MediaBrowserMediaType {
     case video
     case file
     case audio
+}
+
+public enum MediaBrowserPlayableSource: Equatable {
+    case telegramMedia
+    case directStream(url: URL)
+    case youtube(videoId: String, url: URL)
+    case unsupportedUrl(url: URL)
+
+    var supportsRemoteSync: Bool {
+        switch self {
+        case .telegramMedia, .directStream, .youtube:
+            return true
+        case .unsupportedUrl:
+            return false
+        }
+    }
 }
 
 final class MediaBrowserDataSource {
@@ -242,9 +259,9 @@ final class MediaBrowserDataSource {
 
     private func messageTagsList(for tab: MediaBrowserTab) -> [MessageTags?] {
         switch tab {
-        case .allFiles: return [.photoOrVideo, .file, .music, .voiceOrInstantVideo]
+        case .allFiles: return [.photoOrVideo, .file, .music, .voiceOrInstantVideo, .webPage]
         case .photo: return [.photo]
-        case .video: return [.video]
+        case .video: return [.video, .webPage]
         case .documents: return [.file]
         case .pinned: return [.pinned]
         case .onTV: return []
@@ -257,6 +274,7 @@ final class MediaBrowserDataSource {
         var fileSize: Int64 = 0
         var mediaType: MediaBrowserMediaType = .file
         var foundMedia = false
+        var playableSource: MediaBrowserPlayableSource = .telegramMedia
 
         for media in message.media {
             if let file = media as? TelegramMediaFile {
@@ -279,6 +297,23 @@ final class MediaBrowserDataSource {
             }
         }
 
+        if !foundMedia, let externalSource = MediaBrowserURLClassifier.playableSource(in: message) {
+            playableSource = externalSource
+            fileSize = 0
+            mediaType = .video
+            switch externalSource {
+            case let .youtube(_, url):
+                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "YouTube")
+            case let .directStream(url):
+                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "Stream")
+            case let .unsupportedUrl(url):
+                fileName = MediaBrowserURLClassifier.displayTitle(for: url, fallback: "Link")
+            case .telegramMedia:
+                break
+            }
+            foundMedia = true
+        }
+
         guard foundMedia else { return nil }
 
         let senderName: String
@@ -299,6 +334,7 @@ final class MediaBrowserDataSource {
             timestamp: message.timestamp,
             fileSize: fileSize,
             mediaType: mediaType,
+            playableSource: playableSource,
             message: message
         )
     }
