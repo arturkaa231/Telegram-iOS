@@ -76,6 +76,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
     private let remoteSeekTolerance: Double = 1.5
+    private var pendingInitialSeek: (messageId: EngineMessage.Id, position: Double)?
 
     private var currentItem: MediaBrowserItem?
     private var suppressPulseCallback: Bool = false
@@ -441,6 +442,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     func showItem(_ item: MediaBrowserItem, seekTo position: Double? = nil) {
         self.currentItem = item
+        self.pendingInitialSeek = nil
 
         if let previewNode = self.previewNode {
             previewNode.detach()
@@ -448,6 +450,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.previewNode = nil
         }
         self.previewAspectRatio = nil
+        self.expandStatusValue = nil
         self.isPlaying = false
         self.playButton.isHidden = true
         self.loadingIndicator.stopAnimating()
@@ -499,10 +502,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.refreshPlayButtonVisibility()
         self.bindExpandStatus(preview)
         if let position = position, position > 0.0 {
-            Queue.mainQueue().after(0.15) { [weak self, weak preview] in
-                guard self?.previewNode === preview else { return }
-                self?.seekPreview(to: position, report: false)
-            }
+            self.setPendingInitialSeek(position, for: item, preview: preview)
         }
         if self.lastSize.width > 0 {
             self.updateLayout(size: self.lastSize, transition: .immediate)
@@ -514,7 +514,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         guard self.currentItem?.messageId == item.messageId else {
             return
         }
-        self.seekPreview(to: position, report: false)
+        self.setPendingInitialSeek(position, for: item, preview: self.previewNode)
     }
 
     private func handlePreviewStatus(_ status: MediaPreviewPlaybackStatus) {
@@ -530,10 +530,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.isPlaying = true
             self.loadingIndicator.stopAnimating()
             self.refreshPlayButtonVisibility()
+            self.applyPendingInitialSeekIfPossible(bestEffort: false)
         case .paused:
             self.isPlaying = false
             self.loadingIndicator.stopAnimating()
             self.refreshPlayButtonVisibility()
+            self.applyPendingInitialSeekIfPossible(bestEffort: false)
         case .ended:
             self.isPlaying = false
             self.loadingIndicator.stopAnimating()
@@ -669,6 +671,59 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.seekPreview(to: timestamp, report: false)
     }
 
+    private func setPendingInitialSeek(_ position: Double, for item: MediaBrowserItem, preview: MediaPreviewNode?) {
+        guard position > 0.0 else {
+            self.pendingInitialSeek = nil
+            return
+        }
+        self.pendingInitialSeek = (item.messageId, position)
+        self.applyPendingInitialSeekIfPossible(bestEffort: false)
+        self.schedulePendingInitialSeekRetry(preview: preview, delay: 0.15, bestEffort: false)
+        self.schedulePendingInitialSeekRetry(preview: preview, delay: 0.45, bestEffort: false)
+        self.schedulePendingInitialSeekRetry(preview: preview, delay: 1.0, bestEffort: true)
+    }
+
+    private func schedulePendingInitialSeekRetry(preview: MediaPreviewNode?, delay: Double, bestEffort: Bool) {
+        Queue.mainQueue().after(delay) { [weak self, weak preview] in
+            guard let self = self else {
+                return
+            }
+            if let preview = preview, self.previewNode !== preview {
+                return
+            }
+            self.applyPendingInitialSeekIfPossible(bestEffort: bestEffort)
+        }
+    }
+
+    private func applyPendingInitialSeekIfPossible(bestEffort: Bool) {
+        guard let pending = self.pendingInitialSeek else {
+            return
+        }
+        guard self.currentItem?.messageId == pending.messageId else {
+            self.pendingInitialSeek = nil
+            return
+        }
+        guard let preview = self.previewNode, preview.canPlay else {
+            return
+        }
+
+        let target: Double
+        if let status = self.expandStatusValue, status.duration > 0.0 {
+            target = min(pending.position, max(0.0, status.duration - 0.25))
+            if abs(status.timestamp - target) <= 0.35 {
+                self.pendingInitialSeek = nil
+                return
+            }
+        } else if bestEffort {
+            target = pending.position
+        } else {
+            return
+        }
+
+        self.pendingInitialSeek = nil
+        self.seekPreview(to: target, report: false)
+    }
+
     private func progress(for timestamp: Double) -> CGFloat {
         guard let status = self.expandStatusValue, status.duration > 0.0 else {
             return 0.0
@@ -724,6 +779,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.expandRemainingLabel.text = ""
             self.updateBlock3Time(s)
             self.updateBlock2Progress(s)
+            self.applyPendingInitialSeekIfPossible(bestEffort: false)
             let progress: CGFloat
             if s.duration > 0.0 {
                 progress = CGFloat(max(0.0, min(1.0, s.timestamp / s.duration)))

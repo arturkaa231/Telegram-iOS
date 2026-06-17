@@ -93,6 +93,9 @@ final class OnTVSessionCoordinator {
     }
 
     func prepareForLocalItemChange(isPulseActive: Bool, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) -> Bool {
+        if let displayedItem = displayedItem {
+            self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: nil)
+        }
         let shouldCarryPulse = self.activeSessionIsHolder && isPulseActive
         if shouldCarryPulse {
             _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
@@ -104,6 +107,9 @@ final class OnTVSessionCoordinator {
     }
 
     func stopForLocalItemSelection(isPulseActive: Bool, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
+        if let displayedItem = displayedItem {
+            self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: nil)
+        }
         if isPulseActive || self.activeSessionIsHolder {
             _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
             self.onPulseActiveChanged?(false, true)

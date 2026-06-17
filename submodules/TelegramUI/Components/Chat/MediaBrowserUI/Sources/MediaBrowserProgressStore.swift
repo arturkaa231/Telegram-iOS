@@ -119,9 +119,26 @@ final class MediaBrowserProgressStore {
     private static let maxRecordsPerChat = 100
 
     private let postbox: Postbox
+    private let operationDisposablesLock = NSLock()
+    private var operationDisposables: [Int: Disposable] = [:]
+    private var completedOperationIds = Set<Int>()
+    private var nextOperationDisposableId: Int = 0
 
     init(postbox: Postbox) {
         self.postbox = postbox
+    }
+
+    deinit {
+        let disposables: [Disposable]
+        self.operationDisposablesLock.lock()
+        disposables = Array(self.operationDisposables.values)
+        self.operationDisposables.removeAll()
+        self.completedOperationIds.removeAll()
+        self.operationDisposablesLock.unlock()
+
+        for disposable in disposables {
+            disposable.dispose()
+        }
     }
 
     func load(chatId: EnginePeer.Id, completion: @escaping ([MediaBrowserProgressRecord]) -> Void) {
@@ -130,9 +147,13 @@ final class MediaBrowserProgressStore {
             return transaction.retrieveItemCacheEntry(id: entryId)?.get(MediaBrowserProgressRecordList.self)?.records ?? []
         }
         |> deliverOnMainQueue
-        _ = signal.start(next: { records in
+        let operationId = self.makeOperationDisposableId()
+        let disposable = signal.start(next: { records in
             completion(records)
+        }, completed: { [weak self] in
+            self?.releaseOperationDisposable(operationId)
         })
+        self.retainOperationDisposable(disposable, id: operationId)
     }
 
     func savedPosition(for item: MediaBrowserItem, chatId: EnginePeer.Id, completion: @escaping (Double?) -> Void) {
@@ -151,9 +172,13 @@ final class MediaBrowserProgressStore {
             return max(0.0, record.position)
         }
         |> deliverOnMainQueue
-        _ = signal.start(next: { position in
+        let operationId = self.makeOperationDisposableId()
+        let disposable = signal.start(next: { position in
             completion(position)
+        }, completed: { [weak self] in
+            self?.releaseOperationDisposable(operationId)
         })
+        self.retainOperationDisposable(disposable, id: operationId)
     }
 
     func upsert(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
@@ -191,9 +216,12 @@ final class MediaBrowserProgressStore {
                 transaction.putItemCacheEntry(id: entryId, entry: entry)
             }
         }
-        _ = (signal |> deliverOnMainQueue).start(completed: {
+        let operationId = self.makeOperationDisposableId()
+        let disposable = (signal |> deliverOnMainQueue).start(completed: { [weak self] in
             completion?()
+            self?.releaseOperationDisposable(operationId)
         })
+        self.retainOperationDisposable(disposable, id: operationId)
     }
 
     func mergeRemoteContexts(_ contexts: [OnTVPlaybackContext], chatId: EnginePeer.Id) {
@@ -225,7 +253,11 @@ final class MediaBrowserProgressStore {
                 transaction.putItemCacheEntry(id: entryId, entry: entry)
             }
         }
-        _ = signal.start()
+        let operationId = self.makeOperationDisposableId()
+        let disposable = signal.start(completed: { [weak self] in
+            self?.releaseOperationDisposable(operationId)
+        })
+        self.retainOperationDisposable(disposable, id: operationId)
     }
 
     static func fileId(for messageId: EngineMessage.Id) -> String {
@@ -257,5 +289,36 @@ final class MediaBrowserProgressStore {
         case .audio:
             return "audio"
         }
+    }
+
+    private func makeOperationDisposableId() -> Int {
+        self.operationDisposablesLock.lock()
+        let id = self.nextOperationDisposableId
+        self.nextOperationDisposableId += 1
+        self.operationDisposablesLock.unlock()
+        return id
+    }
+
+    private func retainOperationDisposable(_ disposable: Disposable, id: Int) {
+        var shouldRetain = true
+        self.operationDisposablesLock.lock()
+        if self.completedOperationIds.remove(id) != nil {
+            shouldRetain = false
+        } else {
+            self.operationDisposables[id] = disposable
+        }
+        self.operationDisposablesLock.unlock()
+
+        if !shouldRetain {
+            withExtendedLifetime(disposable, {})
+        }
+    }
+
+    private func releaseOperationDisposable(_ id: Int) {
+        self.operationDisposablesLock.lock()
+        if self.operationDisposables.removeValue(forKey: id) == nil {
+            self.completedOperationIds.insert(id)
+        }
+        self.operationDisposablesLock.unlock()
     }
 }
