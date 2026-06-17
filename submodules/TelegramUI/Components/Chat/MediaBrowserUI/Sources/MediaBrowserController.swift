@@ -330,7 +330,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     deinit {
         self.flushCurrentLocalProgress()
-        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
+        self.stopActiveOnTVSessionForExit()
     }
 
     private static let defaultDevelopmentOnTVSyncEndpoint = "http://127.0.0.1:4010"
@@ -484,6 +484,14 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         )
     }
 
+    private func stopActiveOnTVSessionForExit() {
+        self.onTVSessionCoordinator.stopActiveSessionForExit(
+            displayedItem: self.playerNode.displayedItem,
+            position: self.playerNode.currentPlaybackPosition(),
+            progress: self.playerNode.currentPlaybackProgress()
+        )
+    }
+
     private func scheduleProgressRecordsReload(immediate: Bool = false) {
         let now = Date().timeIntervalSince1970
         let minimumInterval: Double = 0.8
@@ -549,7 +557,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private func switchToChatPicker() {
         guard self.mode != .chatPicker else { return }
         self.flushCurrentLocalProgress()
-        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
+        self.stopActiveOnTVSessionForExit()
         self.mode = .chatPicker
         if let layout = self.validLayout {
             self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.25, curve: .easeInOut))
@@ -591,7 +599,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     @objc private func dimTapped() {
         self.flushCurrentLocalProgress()
-        self.onTVSessionCoordinator.leaveActiveViewerSessionIfNeeded()
+        self.stopActiveOnTVSessionForExit()
         self.dismiss()
     }
 

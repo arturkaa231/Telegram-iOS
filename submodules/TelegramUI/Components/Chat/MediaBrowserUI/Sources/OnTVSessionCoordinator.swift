@@ -79,8 +79,8 @@ final class OnTVSessionCoordinator {
     }
 
     func switchPeer(_ peerId: EnginePeer.Id) {
-        self.leaveActiveViewerSessionIfNeeded()
-        self.clearActiveSession()
+        let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+        self.stopActiveSessionForExit(displayedItem: self.currentDisplayedItem?(), position: state.position, progress: state.progress)
         self.store.switchPeer(peerId)
     }
 
@@ -288,6 +288,17 @@ final class OnTVSessionCoordinator {
         let session = self.store.leave(sessionId)
         self.clearActiveSession()
         self.onAudienceChanged?(session?.participantCount ?? 0)
+    }
+
+    func stopActiveSessionForExit(displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
+        if self.activeSessionIsHolder {
+            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            self.clearActiveSession()
+            self.onPulseActiveChanged?(false, false)
+            self.onAudienceChanged?(0)
+        } else {
+            self.leaveActiveViewerSessionIfNeeded()
+        }
     }
 
     private func setActiveSession(_ sessionId: String, isHolder: Bool) {
