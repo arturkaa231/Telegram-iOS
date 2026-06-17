@@ -555,14 +555,15 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.onTVSessionCoordinator.registerLoadedItems(items)
             self.listNode.updateItems(items)
             self.listNode.setAvailableSenders(self.dataSource.uniqueSenders())
-            if self.currentItemIndex == nil, let first = items.first {
+            if let displayedItem = self.playerNode.displayedItem {
+                self.currentItemIndex = items.firstIndex(where: { $0.messageId == displayedItem.messageId })
+            } else if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < items.count {
+                self.playerNode.showItem(items[currentItemIndex])
+            } else if let first = items.first {
                 self.currentItemIndex = 0
                 self.playerNode.showItem(first)
-            } else if let id = self.currentItemIndex, id >= items.count {
-                self.currentItemIndex = items.isEmpty ? nil : 0
-                if let firstItem = items.first {
-                    self.playerNode.showItem(firstItem)
-                }
+            } else {
+                self.currentItemIndex = nil
             }
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
         }
@@ -642,7 +643,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.listNode.onItemSelected = { [weak self] item in
             guard let self = self else { return }
-            self.onTVSessionCoordinator.stopForLocalItemSelection(
+            let shouldCarryPulse = self.onTVSessionCoordinator.prepareForLocalItemChange(
                 isPulseActive: self.playerNode.isPulseActive(),
                 displayedItem: self.playerNode.displayedItem,
                 position: self.playerNode.currentPlaybackPosition(),
@@ -651,6 +652,9 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == item.messageId })
             self.playerNode.showItem(item)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
+            if shouldCarryPulse {
+                _ = self.onTVSessionCoordinator.startPulse(item: item, position: 0.0, progress: 0.0)
+            }
         }
         self.listNode.onItemLongPressed = { [weak self] item in
             self?.onItemLongPressed?(item)

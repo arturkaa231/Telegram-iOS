@@ -82,6 +82,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     var onToggleExpanded: (() -> Void)?
 
+    private var usesEmbeddedPlaybackChrome: Bool {
+        if case .youtube = self.currentItem?.playableSource {
+            return true
+        }
+        return false
+    }
+
     init(context: AccountContext, presentationData: PresentationData) {
         self.context = context
         self.presentationData = presentationData
@@ -485,7 +492,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             preview.updateLayout(size: previewBounds, transition: .immediate)
         }
 
-        if preview.canPlay {
+        if preview.canPlay && !self.usesEmbeddedPlaybackChrome {
             self.playButton.isHidden = false
         }
         self.bindExpandStatus(preview)
@@ -531,6 +538,10 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     private func refreshPlayButtonVisibility() {
         let canPlay = self.previewNode?.canPlay ?? false
+        if self.usesEmbeddedPlaybackChrome {
+            self.playButton.isHidden = true
+            return
+        }
         if self.isExpanded {
             if canPlay {
                 self.playButton.isHidden = false
@@ -546,11 +557,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     @objc private func playTapped() {
+        guard !self.usesEmbeddedPlaybackChrome else { return }
         guard let preview = self.previewNode, preview.canPlay else { return }
         preview.togglePlayPause()
     }
 
     @objc private func previewAreaTapped() {
+        guard !self.usesEmbeddedPlaybackChrome else { return }
         guard let preview = self.previewNode, preview.canPlay else { return }
         preview.togglePlayPause()
     }
@@ -769,7 +782,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let overlay = self.isExpanded
         let canPlay = self.previewNode?.canPlay ?? false
 
-        self.playButton.isHidden = !canPlay || self.isPlaying
+        self.playButton.isHidden = self.usesEmbeddedPlaybackChrome || !canPlay || self.isPlaying
 
         let containerFrame: CGRect
         let cornerRadius: CGFloat

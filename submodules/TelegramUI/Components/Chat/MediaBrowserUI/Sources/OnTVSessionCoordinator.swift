@@ -134,6 +134,11 @@ final class OnTVSessionCoordinator {
                 self.onPulseActiveChanged?(false, true)
                 return
             }
+            guard item.playableSource.supportsRemoteSync else {
+                self.onPulseActiveChanged?(false, true)
+                self.onShowNotice?("Пульт для этого источника пока недоступен")
+                return
+            }
             _ = self.startPulse(item: item, position: position, progress: progress)
         } else {
             if self.activeSessionIsHolder && Date().timeIntervalSince1970 < self.ignorePulseOffUntil {
