@@ -22,6 +22,7 @@ final class MediaBrowserChatListNode: ASDisplayNode, UITableViewDataSource, UITa
     private var items: [MediaBrowserChatItem] = []
 
     var onItemSelected: ((MediaBrowserChatItem) -> Void)?
+    var onItemLongPressed: ((MediaBrowserChatItem) -> Void)?
 
     init(context: AccountContext, presentationData: PresentationData) {
         self.context = context
@@ -57,6 +58,9 @@ final class MediaBrowserChatListNode: ASDisplayNode, UITableViewDataSource, UITa
         self.tableView.backgroundColor = .clear
         self.tableView.rowHeight = 64.0
         self.tableView.register(MediaBrowserChatItemCell.self, forCellReuseIdentifier: MediaBrowserChatItemCell.reuseIdentifier)
+        let longPress = UILongPressGestureRecognizer(target: self, action: #selector(self.longPressHandler(_:)))
+        longPress.minimumPressDuration = 0.5
+        self.tableView.addGestureRecognizer(longPress)
         self.view.addSubview(self.tableView)
 
         self.dataSource.onItemsUpdated = { [weak self] items in
@@ -85,6 +89,13 @@ final class MediaBrowserChatListNode: ASDisplayNode, UITableViewDataSource, UITa
         let category = MediaBrowserChatCategory.allCases[sender.tag]
         self.dataSource.switchCategory(category)
         self.refreshTabs()
+    }
+
+    @objc private func longPressHandler(_ gesture: UILongPressGestureRecognizer) {
+        guard gesture.state == .began else { return }
+        let point = gesture.location(in: self.tableView)
+        guard let indexPath = self.tableView.indexPathForRow(at: point), indexPath.row < self.items.count else { return }
+        self.onItemLongPressed?(self.items[indexPath.row])
     }
 
     private func refreshTabs() {

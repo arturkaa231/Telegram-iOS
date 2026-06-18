@@ -66,14 +66,17 @@ public final class MediaBrowserController: ViewController {
         node.onDeleteMessage = { [weak self] item in
             self?.deleteMessage(item)
         }
-        node.onItemLongPressed = { [weak self] item in
-            self?.showLongPressMenu(for: item)
+        node.onItemLongPressed = { [weak self, weak node] item in
+            self?.showLongPressMenu(for: item, statisticsService: node?.statisticsServiceForCurrentPeer())
+        }
+        node.onChatLongPressed = { [weak self, weak node] item in
+            self?.showStatistics(for: item, statisticsService: node?.statisticsServiceForCurrentPeer())
         }
         self.displayNode = node
         self.displayNodeDidLoad()
     }
 
-    private func showLongPressMenu(for item: MediaBrowserItem) {
+    private func showLongPressMenu(for item: MediaBrowserItem, statisticsService: MediaStatisticsService?) {
         let isDualScenario = item.message.media.contains { media in
             if let file = media as? TelegramMediaFile {
                 if file.mimeType == "application/pdf" { return true }
@@ -81,13 +84,81 @@ public final class MediaBrowserController: ViewController {
             }
             return false
         }
-        guard isDualScenario else { return }
         let alert = UIAlertController(title: item.fileName, message: nil, preferredStyle: .actionSheet)
-        alert.addAction(UIAlertAction(title: "Открыть в PDF-плеере", style: .default, handler: { [weak self] _ in
-            self?.presentGallery(for: item)
+        alert.addAction(UIAlertAction(title: "Статистика", style: .default, handler: { [weak self] _ in
+            self?.showStatistics(for: item, statisticsService: statisticsService)
         }))
-        alert.addAction(UIAlertAction(title: "Открыть в читалке", style: .default, handler: { _ in }))
+        if isDualScenario {
+            alert.addAction(UIAlertAction(title: "Открыть в PDF-плеере", style: .default, handler: { [weak self] _ in
+                self?.presentGallery(for: item)
+            }))
+            alert.addAction(UIAlertAction(title: "Открыть в читалке", style: .default, handler: { _ in }))
+        }
         alert.addAction(UIAlertAction(title: "Отмена", style: .cancel))
+        self.presentUIKitAlert(alert)
+    }
+
+    private func showStatistics(for item: MediaBrowserItem, statisticsService: MediaStatisticsService?) {
+        guard let statisticsService = statisticsService else {
+            self.showStatisticsAlert(title: item.fileName, message: "Статистика недоступна")
+            return
+        }
+        let target = MediaStatisticsTarget.file(item: item, chatId: self.peerId)
+        statisticsService.loadSummary(target: target) { [weak self] result in
+            switch result {
+            case let .success(summary):
+                self?.showStatisticsAlert(title: target.title, message: self?.statisticsMessage(summary) ?? "Нет статистики")
+            case .failure:
+                self?.showStatisticsAlert(title: target.title, message: "Статистика недоступна")
+            }
+        }
+    }
+
+    private func showStatistics(for item: MediaBrowserChatItem, statisticsService: MediaStatisticsService?) {
+        guard let statisticsService = statisticsService else {
+            self.showStatisticsAlert(title: item.title, message: "Статистика недоступна")
+            return
+        }
+        let target = MediaStatisticsTarget.chat(item)
+        statisticsService.loadSummary(target: target) { [weak self] result in
+            switch result {
+            case let .success(summary):
+                self?.showStatisticsAlert(title: target.title, message: self?.statisticsMessage(summary) ?? "Нет статистики")
+            case .failure:
+                self?.showStatisticsAlert(title: target.title, message: "Статистика недоступна")
+            }
+        }
+    }
+
+    private func statisticsMessage(_ summary: MediaStatisticsSummary) -> String {
+        guard summary.totalOpenCount > 0 else {
+            return "Открытий пока нет"
+        }
+        var lines: [String] = ["Открытий: \(summary.totalOpenCount)"]
+        if let lastOpenedAt = summary.lastOpenedAt {
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: self.presentationData.strings.baseLanguageCode)
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            lines.append("Последний раз: \(formatter.string(from: lastOpenedAt))")
+        }
+        if !summary.topUsers.isEmpty {
+            lines.append("")
+            lines.append("Топ пользователей:")
+            for row in summary.topUsers {
+                lines.append("Пользователь \(row.userId): \(row.openCount)")
+            }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    private func showStatisticsAlert(title: String, message: String) {
+        let alert = UIAlertController(title: title.isEmpty ? "Статистика" : title, message: message, preferredStyle: .actionSheet)
+        alert.addAction(UIAlertAction(title: "ОК", style: .cancel))
+        self.presentUIKitAlert(alert)
+    }
+
+    private func presentUIKitAlert(_ alert: UIAlertController) {
         let topWindow = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
@@ -185,6 +256,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private let dataSource: MediaBrowserDataSource
     private let onTVSessionCoordinator: OnTVSessionCoordinator
     private let playbackProgressStore: MediaPlaybackProgressStore
+    private let statisticsService: MediaStatisticsService?
 
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
@@ -222,10 +294,24 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.dataSource = MediaBrowserDataSource(context: context, peerId: peerId)
         let syncConfiguration = Self.onTVSyncConfiguration()
+        let syncTokenService = Self.syncTokenService(configuration: syncConfiguration, accountPeerId: context.account.peerId)
+        if let endpoint = syncConfiguration.endpoint {
+            self.statisticsService = MediaStatisticsService(
+                endpoint: endpoint,
+                authToken: syncConfiguration.authToken,
+                accountPeerId: context.account.peerId,
+                authTokenProvider: syncTokenService.map { service in
+                    return { chatScope, completion in
+                        service.token(forChatScope: chatScope, completion: completion)
+                    }
+                }
+            )
+        } else {
+            self.statisticsService = nil
+        }
         let onTVSessionsStore: OnTVSessionsStore
         if let endpoint = syncConfiguration.endpoint {
             NSLog("[MultigramOnTV] Using synced store endpoint=%@ peerId=%lld accountPeerId=%lld", endpoint.absoluteString, peerId.toInt64(), context.account.peerId.toInt64())
-            let syncTokenService = Self.syncTokenService(configuration: syncConfiguration, accountPeerId: context.account.peerId)
             onTVSessionsStore = SyncedOnTVSessionsStore(
                 peerId: peerId,
                 accountPeerId: context.account.peerId,
@@ -273,7 +359,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.chatListNode.isHidden = true
 
         self.chatListNode.onItemSelected = { [weak self] item in
+            self?.recordOpen(target: .chat(item))
             self?.switchToFiles(peerId: item.peerId)
+        }
+        self.chatListNode.onItemLongPressed = { [weak self] item in
+            self?.onChatLongPressed?(item)
         }
 
         self.setupDimDismiss()
@@ -475,6 +565,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.currentItemIndex = newIdx
         self.playerNode.showItem(nextItem, seekTo: self.playbackProgressStore.progress(for: nextItem)?.position)
         self.listNode.setSelectedItemIndex(newIdx)
+        self.recordOpen(target: .file(item: nextItem, chatId: self.peerId))
         if shouldCarryPulse {
             _ = self.onTVSessionCoordinator.startPulse(item: nextItem, position: 0.0, progress: 0.0)
         }
@@ -485,6 +576,15 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     var onJumpToMessage: ((MediaBrowserItem) -> Void)?
     var onDeleteMessage: ((MediaBrowserItem) -> Void)?
     var onItemLongPressed: ((MediaBrowserItem) -> Void)?
+    var onChatLongPressed: ((MediaBrowserChatItem) -> Void)?
+
+    func statisticsServiceForCurrentPeer() -> MediaStatisticsService? {
+        return self.statisticsService
+    }
+
+    private func recordOpen(target: MediaStatisticsTarget) {
+        self.statisticsService?.recordOpen(target: target)
+    }
 
     func applySenderFilter(_ peerId: EnginePeer.Id?, name: String?) {
         self.dataSource.setSenderFilter(peerId)
@@ -667,6 +767,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == item.messageId })
             self.playerNode.showItem(item, seekTo: self.playbackProgressStore.progress(for: item)?.position)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
+            self.recordOpen(target: .file(item: item, chatId: self.peerId))
             if shouldCarryPulse {
                 _ = self.onTVSessionCoordinator.startPulse(item: item, position: 0.0, progress: 0.0)
             }
@@ -683,6 +784,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.onTVListNode.onSessionSelected = { [weak self] session in
             guard let self = self else { return }
+            self.recordOpen(target: .file(item: session.item, chatId: session.chatId))
             self.onTVSessionCoordinator.activateSession(
                 session,
                 displayedItem: self.playerNode.displayedItem,
