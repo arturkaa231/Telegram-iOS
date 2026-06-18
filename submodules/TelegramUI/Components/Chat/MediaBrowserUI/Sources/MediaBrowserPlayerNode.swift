@@ -720,7 +720,6 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             return
         }
 
-        self.pendingInitialSeek = nil
         self.seekPreview(to: target, report: false)
     }
 
