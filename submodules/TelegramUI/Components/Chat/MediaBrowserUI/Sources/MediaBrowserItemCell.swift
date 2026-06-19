@@ -245,7 +245,7 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.timeLabel.text = mediaBrowserDateString(item.timestamp, locale: locale)
         self.timeLabel.textColor = theme.list.itemSecondaryTextColor
 
-        self.updateProgress(progressRecord: progressRecord, fileSize: item.fileSize, presentationData: presentationData)
+        self.updateProgress(progressRecord: item.mediaType == .photo ? nil : progressRecord, fileSize: item.fileSize, presentationData: presentationData)
 
         let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
 
@@ -339,6 +339,11 @@ final class MediaBrowserItemCell: UITableViewCell {
     }
 
     func updateProgress(progressRecord: MediaBrowserProgressRecord?, for item: MediaBrowserItem, presentationData: PresentationData) {
+        guard item.mediaType != .photo else {
+            self.updateProgress(progressRecord: nil, fileSize: item.fileSize, presentationData: presentationData)
+            setNeedsLayout()
+            return
+        }
         self.updateProgress(progressRecord: progressRecord, fileSize: item.fileSize, presentationData: presentationData)
         setNeedsLayout()
     }
@@ -347,11 +352,7 @@ final class MediaBrowserItemCell: UITableViewCell {
         let theme = presentationData.theme
         let visibleProgressRecord = progressRecord?.hasVisibleProgress == true ? progressRecord : nil
         if fileSize > 0 {
-            if let visibleProgressRecord = visibleProgressRecord {
-                self.sizeLabel.text = "\(Self.formatFileSize(fileSize)) · \(Self.formatProgress(visibleProgressRecord))"
-            } else {
-                self.sizeLabel.text = Self.formatFileSize(fileSize)
-            }
+            self.sizeLabel.text = Self.formatFileSize(fileSize)
             self.sizeLabel.isHidden = false
         } else if let visibleProgressRecord = visibleProgressRecord {
             self.sizeLabel.text = Self.formatProgress(visibleProgressRecord)

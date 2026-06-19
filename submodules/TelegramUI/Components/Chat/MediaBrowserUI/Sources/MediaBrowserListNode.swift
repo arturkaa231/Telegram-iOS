@@ -18,6 +18,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
     private var items: [MediaBrowserItem] = []
     private var progressRecordsByFileId: [String: MediaBrowserProgressRecord] = [:]
+    private var currentPlaybackProgressRecord: MediaBrowserProgressRecord?
     private var loadingState: MediaBrowserLoadingState = .idle
     private var selectedItemIndex: Int?
 
@@ -290,7 +291,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
     func updateProgressRecords(_ records: [MediaBrowserProgressRecord]) {
         var progressRecordsByFileId: [String: MediaBrowserProgressRecord] = [:]
-        for record in records where record.hasVisibleProgress {
+        for record in records where record.hasVisibleProgress && record.mediaType != "photo" {
             progressRecordsByFileId[record.fileId] = record
         }
         guard self.progressRecordsByFileId != progressRecordsByFileId else {
@@ -302,9 +303,31 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
                 continue
             }
             let item = self.items[indexPath.row]
-            let progressRecord = self.progressRecordsByFileId[MediaBrowserProgressStore.fileId(for: item.messageId)]
+            let progressRecord = self.progressRecord(for: item)
             mediaCell.updateProgress(progressRecord: progressRecord, for: item, presentationData: self.presentationData)
         }
+    }
+
+    func updateCurrentPlaybackProgress(item: MediaBrowserItem?, chatId: EnginePeer.Id, position: Double, progress: CGFloat) {
+        let previousFileId = self.currentPlaybackProgressRecord?.fileId
+        let nextRecord: MediaBrowserProgressRecord?
+        if let item = item, item.mediaType != .photo {
+            nextRecord = MediaBrowserProgressRecord.make(item: item, chatId: chatId, position: position, progress: progress, endedAt: nil)
+        } else {
+            nextRecord = nil
+        }
+        guard self.currentPlaybackProgressRecord != nextRecord else {
+            return
+        }
+        self.currentPlaybackProgressRecord = nextRecord
+        var affectedFileIds = Set<String>()
+        if let previousFileId = previousFileId {
+            affectedFileIds.insert(previousFileId)
+        }
+        if let nextFileId = nextRecord?.fileId {
+            affectedFileIds.insert(nextFileId)
+        }
+        self.updateVisibleProgressCells(matching: affectedFileIds)
     }
 
     func updateLoadingState(_ state: MediaBrowserLoadingState) {
@@ -344,10 +367,37 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: MediaBrowserItemCell.reuseIdentifier, for: indexPath) as! MediaBrowserItemCell
         let item = self.items[indexPath.row]
-        let progressRecord = self.progressRecordsByFileId[MediaBrowserProgressStore.fileId(for: item.messageId)]
+        let progressRecord = self.progressRecord(for: item)
         cell.configure(with: item, progressRecord: progressRecord, context: self.context, presentationData: self.presentationData)
         cell.setItemHighlighted(indexPath.row == self.selectedItemIndex, theme: self.presentationData.theme)
         return cell
+    }
+
+    private func progressRecord(for item: MediaBrowserItem) -> MediaBrowserProgressRecord? {
+        guard item.mediaType != .photo else {
+            return nil
+        }
+        let fileId = MediaBrowserProgressStore.fileId(for: item.messageId)
+        if let currentPlaybackProgressRecord = self.currentPlaybackProgressRecord, currentPlaybackProgressRecord.fileId == fileId {
+            return currentPlaybackProgressRecord
+        }
+        return self.progressRecordsByFileId[fileId]
+    }
+
+    private func updateVisibleProgressCells(matching fileIds: Set<String>) {
+        guard !fileIds.isEmpty else {
+            return
+        }
+        for cell in self.tableView.visibleCells {
+            guard let mediaCell = cell as? MediaBrowserItemCell, let indexPath = self.tableView.indexPath(for: cell), indexPath.row < self.items.count else {
+                continue
+            }
+            let item = self.items[indexPath.row]
+            guard fileIds.contains(MediaBrowserProgressStore.fileId(for: item.messageId)) else {
+                continue
+            }
+            mediaCell.updateProgress(progressRecord: self.progressRecord(for: item), for: item, presentationData: self.presentationData)
+        }
     }
 
     // MARK: - UITableViewDelegate
@@ -713,8 +763,8 @@ final class OnTVSessionCell: UITableViewCell {
         self.statusLabel.frame = CGRect(x: cardBounds.width - statusWidth - 14.0, y: 14.0, width: statusWidth, height: 20.0)
 
         let rightColumnWidth: CGFloat = 104.0
-        self.participantsLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 40.0, width: rightColumnWidth, height: 18.0)
-        self.positionLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 60.0, width: rightColumnWidth, height: 18.0)
+        self.participantsLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 36.0, width: rightColumnWidth, height: 16.0)
+        self.positionLabel.frame = CGRect(x: cardBounds.width - rightColumnWidth - 14.0, y: 47.0, width: rightColumnWidth, height: 17.0)
 
         let textLeft = self.thumbnailView.frame.maxX + 12.0
         let textRight = min(self.statusLabel.frame.minX - 10.0, self.participantsLabel.frame.minX - 10.0)
@@ -723,7 +773,7 @@ final class OnTVSessionCell: UITableViewCell {
         self.metaLabel.frame = CGRect(x: textLeft, y: 43.0, width: textWidth, height: 18.0)
 
         let progressX = textLeft
-        let progressY: CGFloat = cardBounds.height - 18.0
+        let progressY = min(cardBounds.height - 20.0, self.positionLabel.frame.maxY + 8.0)
         let progressWidth = max(44.0, cardBounds.width - progressX - 14.0)
         self.progressTrack.frame = CGRect(x: progressX, y: progressY, width: progressWidth, height: 4.0)
         let progress = max(0.0, min(1.0, self.progressValue))

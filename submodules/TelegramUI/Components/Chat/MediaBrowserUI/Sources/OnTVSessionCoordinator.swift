@@ -98,7 +98,10 @@ final class OnTVSessionCoordinator {
         }
         let shouldCarryPulse = self.activeSessionIsHolder && isPulseActive
         if shouldCarryPulse {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.clearActiveSession()
         } else {
             self.leaveActiveViewerSessionIfNeeded()
@@ -111,7 +114,10 @@ final class OnTVSessionCoordinator {
             self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: nil)
         }
         if isPulseActive || self.activeSessionIsHolder {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.onPulseActiveChanged?(false, true)
             self.onAudienceChanged?(0)
             self.clearActiveSession()
@@ -123,7 +129,7 @@ final class OnTVSessionCoordinator {
     func startPulse(item: MediaBrowserItem, position: Double, progress: CGFloat) -> OnTVPlaybackContext {
         let session = self.store.startPulse(item: item, position: position, progress: progress)
         self.pendingHolderSessionId = session.sessionId
-        self.ignorePulseOffUntil = Date().timeIntervalSince1970 + 1.0
+        self.ignorePulseOffUntil = Date().timeIntervalSince1970 + 2.0
         self.setActiveSession(session.sessionId, isHolder: true)
         self.onPulseActiveChanged?(true, true)
         self.onAudienceChanged?(session.participantCount)
@@ -157,7 +163,10 @@ final class OnTVSessionCoordinator {
             }
             self.pendingHolderSessionId = nil
             self.ignorePulseOffUntil = 0.0
-            let sessions = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            var sessions = self.endActiveHeldSession(position: position, progress: progress)
+            if sessions.isEmpty {
+                sessions = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.clearActiveSession()
             self.onAudienceChanged?(sessions.first?.participantCount ?? 0)
         }
@@ -253,6 +262,10 @@ final class OnTVSessionCoordinator {
         self.store.savedPosition(for: item, completion: completion)
     }
 
+    func savedRecord(for item: MediaBrowserItem, completion: @escaping (MediaBrowserProgressRecord?) -> Void) {
+        self.store.savedRecord(for: item, completion: completion)
+    }
+
     func activateSession(_ session: OnTVPlaybackContext, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
         if self.activeSessionId == session.sessionId && self.activeSessionIsHolder {
             self.onFlashLockedSession?(session.sessionId)
@@ -260,7 +273,10 @@ final class OnTVSessionCoordinator {
         }
 
         if self.activeSessionIsHolder {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.onPulseActiveChanged?(false, true)
             self.onAudienceChanged?(0)
             self.clearActiveSession()
@@ -298,7 +314,10 @@ final class OnTVSessionCoordinator {
 
     func stopActiveSessionForExit(displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
         if self.activeSessionIsHolder {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.clearActiveSession()
             self.onPulseActiveChanged?(false, false)
             self.onAudienceChanged?(0)
@@ -335,6 +354,16 @@ final class OnTVSessionCoordinator {
         self.pendingHolderSessionId = nil
         self.ignorePulseOffUntil = 0.0
         self.onActiveHeldSessionChanged?(nil)
+    }
+
+    private func endActiveHeldSession(position: Double, progress: CGFloat) -> [OnTVPlaybackContext] {
+        guard let sessionId = self.activeSessionId, self.activeSessionIsHolder else {
+            return []
+        }
+        guard let session = self.store.endHeldSession(sessionId: sessionId, position: position, progress: progress) else {
+            return []
+        }
+        return [session]
     }
 
     private func sendActivePlayerAction(isPlaying: Bool) {
@@ -416,7 +445,7 @@ final class OnTVSessionCoordinator {
             guard self.activeSessionId == sessionId else {
                 return
             }
-            if self.pendingHolderSessionId == sessionId && Date().timeIntervalSince1970 < self.ignorePulseOffUntil {
+            if self.activeSessionIsHolder && Date().timeIntervalSince1970 < self.ignorePulseOffUntil {
                 self.onPulseActiveChanged?(true, false)
                 return
             }

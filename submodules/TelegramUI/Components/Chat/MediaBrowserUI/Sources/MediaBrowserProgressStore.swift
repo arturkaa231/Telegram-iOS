@@ -52,6 +52,9 @@ struct MediaBrowserProgressRecord: Codable, Equatable {
     }
 
     static func make(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?) -> MediaBrowserProgressRecord? {
+        guard item.mediaType != .photo else {
+            return nil
+        }
         let normalizedPosition = max(0.0, position)
         let normalizedProgress = Self.normalizedProgress(progress)
         guard normalizedPosition >= Self.minimumVisiblePosition || normalizedProgress >= Self.minimumVisibleProgress || endedAt != nil else {
@@ -166,6 +169,9 @@ final class MediaBrowserProgressStore {
             guard let record = records.first(where: { $0.fileId == fileId }) else {
                 return nil
             }
+            guard record.mediaType != "photo" else {
+                return nil
+            }
             guard record.hasVisibleProgress else {
                 return nil
             }
@@ -181,8 +187,37 @@ final class MediaBrowserProgressStore {
         self.retainOperationDisposable(disposable, id: operationId)
     }
 
+    func savedRecord(for item: MediaBrowserItem, chatId: EnginePeer.Id, completion: @escaping (MediaBrowserProgressRecord?) -> Void) {
+        let entryId = Self.entryId(chatId: chatId)
+        let fileId = Self.fileId(for: item.messageId)
+        let signal = self.postbox.transaction { transaction -> MediaBrowserProgressRecord? in
+            guard let records = transaction.retrieveItemCacheEntry(id: entryId)?.get(MediaBrowserProgressRecordList.self)?.records else {
+                return nil
+            }
+            guard let record = records.first(where: { $0.fileId == fileId }) else {
+                return nil
+            }
+            guard record.mediaType != "photo" else {
+                return nil
+            }
+            guard record.hasVisibleProgress else {
+                return nil
+            }
+            return record
+        }
+        |> deliverOnMainQueue
+        let operationId = self.makeOperationDisposableId()
+        let disposable = signal.start(next: { record in
+            completion(record)
+        }, completed: { [weak self] in
+            self?.releaseOperationDisposable(operationId)
+        })
+        self.retainOperationDisposable(disposable, id: operationId)
+    }
+
     func upsert(item: MediaBrowserItem, chatId: EnginePeer.Id, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
         guard let record = MediaBrowserProgressRecord.make(item: item, chatId: chatId, position: position, progress: progress, endedAt: endedAt) else {
+            completion?()
             return
         }
         self.upsert(record: record, completion: completion)

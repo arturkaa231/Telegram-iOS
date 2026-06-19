@@ -69,10 +69,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     var onPlaybackStatusChanged: ((MediaPreviewPlaybackStatus) -> Void)?
     var onSeekRequested: ((Double, CGFloat) -> Void)?
     var onPlaybackPositionUpdated: ((Double, CGFloat, Bool) -> Void)?
+    var onCloseMediaBrowser: (() -> Void)?
+    var onToggleFocusMode: (() -> Void)?
 
     private var isMuted: Bool = false
     private var isPlaying: Bool = false
     private var isExpanded: Bool = false
+    private var isFocusMode: Bool = false
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
     private let remoteSeekTolerance: Double = 1.5
@@ -91,7 +94,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private var shouldShowCompactEmbeddedAction: Bool {
-        return self.usesEmbeddedPlaybackChrome && !self.isExpanded
+        return self.usesEmbeddedPlaybackChrome && !self.isExpanded && !self.isFocusMode
     }
 
     init(context: AccountContext, presentationData: PresentationData) {
@@ -147,15 +150,19 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.nightModeButton = UIButton(type: .custom)
         self.nightModeButton.setImage(UIImage(systemName: "moon", withConfiguration: iconConfig), for: .normal)
+        self.nightModeButton.accessibilityLabel = "Режим фокусировки"
 
         self.expandButton = UIButton(type: .custom)
         self.expandButton.setImage(UIImage(systemName: "arrow.up.left.and.arrow.down.right", withConfiguration: iconConfig), for: .normal)
+        self.expandButton.accessibilityLabel = "Развернуть плеер"
 
         self.fitButton = UIButton(type: .custom)
         self.fitButton.setImage(UIImage(systemName: "viewfinder", withConfiguration: iconConfig), for: .normal)
+        self.fitButton.accessibilityLabel = "Полноэкранный просмотр"
 
         self.listButton = UIButton(type: .custom)
         self.listButton.setImage(UIImage(systemName: "list.bullet", withConfiguration: iconConfig), for: .normal)
+        self.listButton.accessibilityLabel = "Закрыть медиатеку"
 
         self.shareButton = UIButton(type: .custom)
         self.shareButton.setImage(UIImage(systemName: "arrow.up.right", withConfiguration: iconConfig), for: .normal)
@@ -303,12 +310,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         self.muteButton.addTarget(self, action: #selector(muteTapped), for: .touchUpInside)
+        self.nightModeButton.addTarget(self, action: #selector(focusTapped), for: .touchUpInside)
         self.expandButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
         self.fitButton.addTarget(self, action: #selector(galleryTapped), for: .touchUpInside)
         self.shareButton.addTarget(self, action: #selector(shareTapped), for: .touchUpInside)
         self.chatButton.addTarget(self, action: #selector(chatTapped), for: .touchUpInside)
         self.deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-        self.listButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        self.listButton.addTarget(self, action: #selector(listTapped), for: .touchUpInside)
         self.rewindButton.addTarget(self, action: #selector(rewindTapped), for: .touchUpInside)
         self.forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
         self.prevButton.addTarget(self, action: #selector(prevTapped), for: .touchUpInside)
@@ -344,7 +352,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let themePrimary = list.itemPrimaryTextColor
         let themeSecondary = list.itemSecondaryTextColor
         let cardBg = list.itemBlocksBackgroundColor
-        let overlay = self.isExpanded
+        let overlay = self.isExpanded || self.isFocusMode
 
         let chromePrimary: UIColor = overlay ? .white : themePrimary
         let chromeSecondary: UIColor = overlay ? UIColor.white.withAlphaComponent(0.85) : themeSecondary
@@ -371,9 +379,10 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         for button in [self.nightModeButton, self.expandButton, self.fitButton, self.listButton] {
             button.tintColor = chromePrimary
+            button.alpha = button.isEnabled ? 1.0 : 0.32
             if overlay {
                 button.layer.shadowColor = UIColor.black.cgColor
-                button.layer.shadowOpacity = 0.45
+                button.layer.shadowOpacity = button.isEnabled ? 0.45 : 0.0
                 button.layer.shadowRadius = 3.0
                 button.layer.shadowOffset = .zero
             } else {
@@ -559,7 +568,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             }
             return
         }
-        if self.isExpanded {
+        if self.isExpanded || self.isFocusMode {
             if canPlay {
                 self.playButton.isHidden = false
                 let iconName = self.isPlaying ? "pause.fill" : "play.fill"
@@ -604,12 +613,21 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.refreshExpandIcon()
         self.refreshColors()
         self.refreshPlayButtonVisibility()
+        self.expandButton.accessibilityLabel = self.isExpanded ? "Свернуть плеер" : "Развернуть плеер"
         self.onToggleExpanded?()
+    }
+
+    @objc private func focusTapped() {
+        self.onToggleFocusMode?()
     }
 
     @objc private func galleryTapped() {
         guard let item = self.currentItem else { return }
         self.onPresentGallery?(item)
+    }
+
+    @objc private func listTapped() {
+        self.onCloseMediaBrowser?()
     }
 
     @objc private func shareTapped() {
@@ -841,6 +859,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
         let name = self.isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
         self.expandButton.setImage(UIImage(systemName: name, withConfiguration: iconConfig), for: .normal)
+        self.expandButton.accessibilityLabel = self.isExpanded ? "Свернуть плеер" : "Развернуть плеер"
     }
 
     func setExpandedState(_ value: Bool) {
@@ -849,13 +868,30 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.refreshExpandIcon()
     }
 
+    func setFocusMode(_ value: Bool) {
+        guard self.isFocusMode != value else { return }
+        self.isFocusMode = value
+        self.refreshFocusIcon()
+        self.refreshColors()
+        self.refreshPlayButtonVisibility()
+    }
+
+    private func refreshFocusIcon() {
+        let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
+        let name = self.isFocusMode ? "moon.fill" : "moon"
+        self.nightModeButton.setImage(UIImage(systemName: name, withConfiguration: iconConfig), for: .normal)
+        self.nightModeButton.accessibilityLabel = self.isFocusMode ? "Выйти из режима фокусировки" : "Режим фокусировки"
+        self.nightModeButton.accessibilityValue = self.isFocusMode ? "Включён" : "Выключен"
+    }
+
     func updateLayout(size: CGSize, transition: ContainedViewLayoutTransition) {
         self.updateLayout(size: size, safeInsets: .zero, transition: transition)
     }
 
     func updateLayout(size: CGSize, safeInsets: UIEdgeInsets, transition: ContainedViewLayoutTransition) {
         self.lastSize = size
-        let overlay = self.isExpanded
+        let expandedChrome = self.isExpanded || self.isFocusMode
+        let overlay = expandedChrome
         let canPlay = self.previewNode?.canPlay ?? false
 
         self.refreshPlayButtonVisibility()
@@ -904,8 +940,8 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             preview.updateLayout(size: previewFrame.size, transition: transition)
         }
 
-        let playSize: CGFloat = self.isExpanded ? 24.0 : 48.0
-        if self.isExpanded {
+        let playSize: CGFloat = expandedChrome ? 24.0 : 48.0
+        if expandedChrome {
             self.playButton.frame = CGRect(
                 x: (safeInsets.left + 12.0),
                 y: innerHeight - (safeInsets.bottom + 14.0) - 28.0 + (28.0 - playSize) / 2.0,
@@ -953,6 +989,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         )
         self.toggleHitButton.frame = self.toggleSwitch.frame.insetBy(dx: -10.0, dy: -10.0)
 
+        self.dateLabel.font = overlay ? UIFont.systemFont(ofSize: self.isFocusMode ? 9.0 : 14.0, weight: .regular) : UIFont.systemFont(ofSize: 15.0, weight: .regular)
         let dateDotSize: CGFloat = 10.0
         let dateAttributes: [NSAttributedString.Key: Any] = [.font: self.dateLabel.font as Any]
         let dateTextWidth = ((self.dateLabel.text ?? "") as NSString).size(withAttributes: dateAttributes).width
@@ -960,17 +997,17 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let dateBlockWidth = dateLabelWidth + 6.0 + dateDotSize
 
         if overlay {
-            self.fileNameLabel.font = UIFont.systemFont(ofSize: 28.0, weight: .regular)
+            self.fileNameLabel.font = UIFont.systemFont(ofSize: self.isFocusMode ? 14.0 : 28.0, weight: .regular)
             self.fileNameLabel.textAlignment = .right
             self.dateLabel.textAlignment = .right
-            let titleHeight = self.fileNameLabel.font.lineHeight * 2.0
-            let titleTop = topInset + muteSize + 16.0
+            let titleHeight = self.fileNameLabel.font.lineHeight * (self.isFocusMode ? 1.2 : 2.0)
+            let titleTop = self.isFocusMode ? max(topInset + muteSize + 12.0, innerHeight * 0.34) : topInset + muteSize + 16.0
             let titleRight = innerWidth - rightInset
-            let titleLeft = max(leftInset + muteSize + 16.0, innerWidth * 0.40)
+            let titleLeft = max(leftInset + muteSize + 16.0, innerWidth * (self.isFocusMode ? 0.58 : 0.40))
             let titleWidth = max(120.0, titleRight - titleLeft)
             self.fileNameLabel.frame = CGRect(x: titleLeft, y: titleTop, width: titleWidth, height: titleHeight)
 
-            let dateY = self.fileNameLabel.frame.maxY + 6.0
+            let dateY = self.fileNameLabel.frame.maxY + (self.isFocusMode ? 1.0 : 6.0)
             self.dateLabel.frame = CGRect(x: titleRight - dateBlockWidth, y: dateY, width: dateLabelWidth, height: 20.0)
             self.senderAvatarNode.view.frame = CGRect(x: self.dateLabel.frame.maxX + 6.0, y: dateY + (20.0 - dateDotSize) / 2.0, width: dateDotSize, height: dateDotSize)
             self.senderAvatarNode.updateSize(size: CGSize(width: dateDotSize, height: dateDotSize))
@@ -1004,6 +1041,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.fitButton,
             self.listButton
         ]
+        self.listButton.isHidden = self.isFocusMode
         for (index, button) in iconButtons.reversed().enumerated() {
             let x = iconsRight - CGFloat(index + 1) * iconSize - CGFloat(index) * iconSpacing
             button.frame = CGRect(x: x, y: iconsY, width: iconSize, height: iconSize)
@@ -1019,7 +1057,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.block2ProgressTrack.isHidden = true
 
-        let scrubberVisible = self.isExpanded && canPlay
+        let scrubberVisible = expandedChrome && canPlay
         self.expandRemainingLabel.isHidden = true
         if scrubberVisible {
             self.expandScrubbingNode.isHidden = false
@@ -1045,7 +1083,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let countX = iconsRight - countWidth
         self.participantsCountLabel.frame = CGRect(x: countX, y: statusY, width: countWidth, height: ceil(countSize.height))
 
-        if canPlay && !self.isExpanded {
+        if canPlay && !expandedChrome {
             self.participantsCountLabel.isHidden = true
             self.block3TimeLabel.isHidden = false
             let timeText = self.block3TimeLabel.text ?? ""

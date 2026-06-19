@@ -153,6 +153,8 @@ public final class MediaBrowserController: ViewController {
 }
 
 private class TouchBlockingView: UIView {
+    var passThroughOutsideFrame: CGRect?
+
     override init(frame: CGRect) {
         super.init(frame: frame)
         self.disablesInteractiveTransitionGestureRecognizer = true
@@ -163,6 +165,9 @@ private class TouchBlockingView: UIView {
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let passThroughOutsideFrame = self.passThroughOutsideFrame, !passThroughOutsideFrame.contains(point) {
+            return nil
+        }
         let result = super.hitTest(point, with: event)
         return result ?? self
     }
@@ -188,6 +193,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
+    private var isFocusMode: Bool = false
     private var basePresentationData: PresentationData
     private var mode: Mode
     private var selectedTab: MediaBrowserTab = .allFiles
@@ -195,6 +201,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var currentItemIndex: Int?
     private var mediaLoadingState: MediaBrowserLoadingState = .idle
     private var pendingOnTVResolverLoad: Bool = false
+    private var autoOpenedRemoteOnTVSessionId: String?
     private var lastProgressRecordsReloadAt: Double = 0.0
     private var progressRecordsReloadScheduled: Bool = false
 
@@ -289,6 +296,17 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                 self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.3, curve: .easeInOut))
             }
         }
+        self.playerNode.onToggleFocusMode = { [weak self] in
+            guard let self = self else { return }
+            self.isFocusMode.toggle()
+            self.playerNode.setFocusMode(self.isFocusMode)
+            if let layout = self.validLayout {
+                self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.3, curve: .easeInOut))
+            }
+        }
+        self.playerNode.onCloseMediaBrowser = { [weak self] in
+            self?.dismiss()
+        }
         self.playerNode.onPresentGallery = { [weak self] item in
             self?.onPresentGallery?(item)
         }
@@ -324,7 +342,10 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self?.onTVSessionCoordinator.handleSeekRequested(position: position, progress: progress)
         }
         self.playerNode.onPlaybackPositionUpdated = { [weak self] position, progress, isPlaying in
-            self?.onTVSessionCoordinator.handlePlaybackPositionUpdated(position: position, progress: progress, isPlaying: isPlaying)
+            guard let self = self else { return }
+            let displayedItem = self.playerNode.displayedItem
+            self.listNode.updateCurrentPlaybackProgress(item: displayedItem, chatId: self.peerId, position: position, progress: progress)
+            self.onTVSessionCoordinator.handlePlaybackPositionUpdated(position: position, progress: progress, isPlaying: isPlaying)
         }
     }
 
@@ -333,7 +354,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.stopActiveOnTVSessionForExit()
     }
 
-    private static let defaultDevelopmentOnTVSyncEndpoint = "http://127.0.0.1:4010"
+    private static let defaultDevelopmentOnTVSyncEndpoint = "http://192.168.1.76:4010"
     private static let defaultDevelopmentOnTVSyncToken = "dev-local-token"
     private static let defaultProductionOnTVSyncEndpoint = "https://multigram-sync-layer.onrender.com"
 
@@ -374,6 +395,21 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         let endpointString = endpointKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
         let storedAuthToken = tokenKeys.compactMap { UserDefaults.standard.string(forKey: $0) }.first
         let authToken = didPassAuthTokenArgument ? launchAuthToken : storedAuthToken
+
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["MULTIGRAM_ALLOW_STORED_SYNC_ENDPOINT"] != "1",
+           let endpoint = URL(string: Self.defaultDevelopmentOnTVSyncEndpoint) {
+            let localAuthToken = authToken ?? Self.defaultDevelopmentOnTVSyncToken
+            UserDefaults.standard.set(Self.defaultDevelopmentOnTVSyncEndpoint, forKey: "MultigramOnTVSyncEndpoint")
+            UserDefaults.standard.set(Self.defaultDevelopmentOnTVSyncEndpoint, forKey: "PlayGramOnTVSyncEndpoint")
+            UserDefaults.standard.set(localAuthToken, forKey: "MultigramOnTVSyncToken")
+            UserDefaults.standard.set(localAuthToken, forKey: "PlayGramOnTVSyncToken")
+            UserDefaults.standard.synchronize()
+            NSLog("[MultigramOnTV] Sync configuration forced local endpoint=%@ tokenPresent=true", endpoint.absoluteString)
+            return (endpoint, localAuthToken)
+        }
+        #endif
+
         if let endpointString = endpointString, let endpoint = URL(string: endpointString) {
             NSLog("[MultigramOnTV] Sync configuration endpoint=%@ tokenPresent=%@", endpointString, authToken == nil ? "false" : "true")
             return (endpoint, authToken)
@@ -390,8 +426,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private static func defaultOnTVSyncConfiguration(authToken: String?) -> (endpoint: URL, authToken: String?)? {
         #if DEBUG
-        guard ProcessInfo.processInfo.environment["SIMULATOR_DEVICE_NAME"] != nil,
-              let endpoint = URL(string: Self.defaultDevelopmentOnTVSyncEndpoint) else {
+        guard let endpoint = URL(string: Self.defaultDevelopmentOnTVSyncEndpoint) else {
             return nil
         }
         return (endpoint, authToken ?? Self.defaultDevelopmentOnTVSyncToken)
@@ -458,20 +493,23 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     private func showItem(_ item: MediaBrowserItem, explicitPosition: Double? = nil) {
+        self.listNode.updateCurrentPlaybackProgress(item: item, chatId: self.peerId, position: explicitPosition ?? 0.0, progress: 0.0)
         if let explicitPosition = explicitPosition {
             self.playerNode.showItem(item, seekTo: explicitPosition)
             return
         }
 
         self.playerNode.showItem(item)
-        self.onTVSessionCoordinator.savedPosition(for: item) { [weak self] position in
-            guard let self = self, let position = position else {
+        self.onTVSessionCoordinator.savedRecord(for: item) { [weak self] record in
+            guard let self = self, let record = record else {
                 return
             }
             guard self.playerNode.displayedItem?.messageId == item.messageId else {
                 return
             }
+            let position = max(0.0, record.position)
             self.playerNode.seekToSavedPosition(position, for: item)
+            self.listNode.updateCurrentPlaybackProgress(item: item, chatId: self.peerId, position: position, progress: CGFloat(record.normalizedProgress))
         }
     }
 
@@ -580,7 +618,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private func applyPresentationData(_ presentationData: PresentationData) {
         self.presentationData = presentationData
-        self.contentNode.backgroundColor = presentationData.theme.list.plainBackgroundColor
+        self.contentNode.backgroundColor = self.isFocusMode ? .clear : presentationData.theme.list.plainBackgroundColor
         self.playerNode.updatePresentationData(presentationData)
         self.tabBarNode.updatePresentationData(presentationData)
         self.listNode.updatePresentationData(presentationData)
@@ -657,6 +695,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             guard let self = self else { return }
             self.onTVListNode.updateSessions(sessions)
             self.scheduleProgressRecordsReload()
+            self.autoOpenRemoteLiveSessionIfNeeded(sessions)
         }
         self.onTVSessionCoordinator.onUnresolvedSessionsUpdated = { [weak self] sessions in
             self?.onTVListNode.updateUnresolvedSessions(sessions)
@@ -777,38 +816,78 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.dataSource.loadNextBatch()
     }
 
+    private func autoOpenRemoteLiveSessionIfNeeded(_ sessions: [OnTVPlaybackContext]) {
+        guard let session = sessions.first(where: { context in
+            guard context.status == .live, let pulseUserId = context.pulseUserId else {
+                return false
+            }
+            return pulseUserId != self.context.account.peerId
+        }) else {
+            self.autoOpenedRemoteOnTVSessionId = nil
+            return
+        }
+        guard self.autoOpenedRemoteOnTVSessionId != session.sessionId else {
+            return
+        }
+        guard !self.playerNode.isPulseActive() else {
+            return
+        }
+        self.autoOpenedRemoteOnTVSessionId = session.sessionId
+        NSLog("[MultigramOnTV] Auto opening remote live sessionId=%@ pulseUserId=%lld", session.sessionId, session.pulseUserId?.toInt64() ?? 0)
+        self.onTVSessionCoordinator.activateSession(
+            session,
+            displayedItem: self.playerNode.displayedItem,
+            position: self.playerNode.currentPlaybackPosition(),
+            progress: self.playerNode.currentPlaybackProgress()
+        )
+    }
+
     func containerLayoutUpdated(layout: ContainerViewLayout, transition: ContainedViewLayoutTransition) {
         self.validLayout = layout
 
         let bounds = CGRect(origin: .zero, size: layout.size)
         transition.updateFrame(node: self.dimNode, frame: bounds)
+        transition.updateAlpha(node: self.dimNode, alpha: self.isFocusMode ? 0.0 : 0.4)
+        self.dimNode.backgroundColor = UIColor.black
 
-        let verticalPadding: CGFloat = 76.0
-        let horizontalPadding: CGFloat = 16.0
-        let cornerRadius: CGFloat = 16.0
+        let verticalPadding: CGFloat = self.isFocusMode ? 0.0 : 76.0
+        let horizontalPadding: CGFloat = self.isFocusMode ? 0.0 : 16.0
+        let cornerRadius: CGFloat = self.isFocusMode ? 0.0 : 16.0
         transition.updateCornerRadius(node: self.contentNode, cornerRadius: cornerRadius)
         let contentFrame = CGRect(x: horizontalPadding, y: verticalPadding, width: layout.size.width - horizontalPadding * 2, height: layout.size.height - verticalPadding * 2)
         transition.updateFrame(node: self.contentNode, frame: contentFrame)
+        self.contentNode.backgroundColor = self.isFocusMode ? .clear : self.presentationData.theme.list.plainBackgroundColor
+        self.contentNode.clipsToBounds = !self.isFocusMode
 
         let isChatPicker = self.mode == .chatPicker
-        let listVisible = !self.isExpanded && !isChatPicker
+        let listVisible = !self.isExpanded && !self.isFocusMode && !isChatPicker
         let onTVVisible = listVisible && self.selectedTab == .onTV
         let mediaListVisible = listVisible && self.selectedTab != .onTV
         let tabBarHeight: CGFloat = 44.0
 
-        let playerHeight: CGFloat
+        let playerFrame: CGRect
         if isChatPicker {
-            playerHeight = 0.0
+            playerFrame = .zero
+        } else if self.isFocusMode {
+            let focusWidth = min(contentFrame.width - 24.0, 430.0)
+            let focusHeight = min(270.0, max(196.0, floor(focusWidth * 0.56)))
+            let focusX = floor((contentFrame.width - focusWidth) / 2.0)
+            let focusY = max(layout.safeInsets.top + 64.0, 92.0)
+            playerFrame = CGRect(x: focusX, y: focusY, width: focusWidth, height: focusHeight)
         } else if listVisible {
-            playerHeight = contentFrame.height * 0.35
+            playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height * 0.35)
         } else {
-            playerHeight = contentFrame.height
+            playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height)
         }
-        let playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: playerHeight)
         transition.updateFrame(node: self.playerNode, frame: playerFrame)
         self.playerNode.updateLayout(size: playerFrame.size, safeInsets: .zero, transition: transition)
         transition.updateAlpha(node: self.playerNode, alpha: isChatPicker ? 0.0 : 1.0)
 
+        if let touchView = self.view as? TouchBlockingView {
+            touchView.passThroughOutsideFrame = self.isFocusMode ? playerFrame : nil
+        }
+
+        let playerHeight = playerFrame.height
         let tabBarFrame = CGRect(x: 0, y: playerHeight, width: contentFrame.width, height: tabBarHeight)
         transition.updateFrame(node: self.tabBarNode, frame: tabBarFrame)
         self.tabBarNode.updateLayout(width: contentFrame.width, transition: transition)
