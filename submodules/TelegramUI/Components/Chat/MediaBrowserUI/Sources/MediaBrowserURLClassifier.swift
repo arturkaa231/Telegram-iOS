@@ -28,15 +28,86 @@ enum MediaBrowserURLClassifier {
         return nil
     }
 
+    static func displayTitle(in message: Message, for url: URL, fallback: String) -> String {
+        if let title = self.webpageTitle(in: message, matching: url) {
+            return title
+        }
+        return self.displayTitle(for: url, fallback: fallback)
+    }
+
     static func displayTitle(for url: URL, fallback: String) -> String {
-        if let videoId = self.youtubeVideoId(from: url) {
-            return "YouTube \(videoId)"
+        if self.youtubeVideoId(from: url) != nil {
+            return fallback
         }
         let lastPath = url.lastPathComponent
         if !lastPath.isEmpty && lastPath != "/" {
             return lastPath
         }
         return url.host ?? fallback
+    }
+
+    private static func webpageTitle(in message: Message, matching url: URL) -> String? {
+        var firstLoadedTitle: String?
+
+        for media in message.media {
+            guard let webpage = media as? TelegramMediaWebpage else {
+                continue
+            }
+            guard case let .Loaded(content) = webpage.content else {
+                continue
+            }
+
+            let title = self.bestWebpageTitle(content)
+            if firstLoadedTitle == nil {
+                firstLoadedTitle = title
+            }
+
+            if self.webpageContent(content, matches: url), let title = title {
+                return title
+            }
+        }
+
+        return firstLoadedTitle
+    }
+
+    private static func bestWebpageTitle(_ content: TelegramMediaWebpageLoadedContent) -> String? {
+        for value in [content.title, content.websiteName, content.displayUrl, content.url] {
+            if let title = self.cleanedTitle(value) {
+                return title
+            }
+        }
+        return nil
+    }
+
+    private static func cleanedTitle(_ value: String?) -> String? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        return value
+    }
+
+    private static func webpageContent(_ content: TelegramMediaWebpageLoadedContent, matches url: URL) -> Bool {
+        for value in [content.url, content.displayUrl, content.embedUrl].compactMap({ $0 }) {
+            guard let candidate = self.normalizedURL(from: value) else {
+                continue
+            }
+            if self.urlsMatch(candidate, url) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func urlsMatch(_ lhs: URL, _ rhs: URL) -> Bool {
+        if lhs.absoluteString == rhs.absoluteString {
+            return true
+        }
+        guard let lhsHost = lhs.host?.lowercased(), let rhsHost = rhs.host?.lowercased() else {
+            return false
+        }
+        let lhsPath = lhs.path.isEmpty ? "/" : lhs.path
+        let rhsPath = rhs.path.isEmpty ? "/" : rhs.path
+        return lhsHost == rhsHost && lhsPath == rhsPath
     }
 
     private static func candidateURLStrings(in message: Message) -> [String] {
