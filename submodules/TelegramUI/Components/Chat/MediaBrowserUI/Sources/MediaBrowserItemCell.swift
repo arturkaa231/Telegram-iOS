@@ -80,6 +80,23 @@ final class MediaBrowserItemCell: UITableViewCell {
         return label
     }()
 
+    private let progressTrackView: UIView = {
+        let view = UIView()
+        view.layer.cornerRadius = 1.5
+        view.clipsToBounds = true
+        view.isHidden = true
+        return view
+    }()
+
+    private let progressFillView: UIView = {
+        let view = UIView()
+        view.layer.cornerRadius = 1.5
+        view.clipsToBounds = true
+        return view
+    }()
+
+    private var visiblePlaybackProgress: CGFloat?
+
     private let highlightBackgroundView: UIView = {
         let v = UIView()
         v.isHidden = true
@@ -101,6 +118,8 @@ final class MediaBrowserItemCell: UITableViewCell {
         contentView.addSubview(senderLabel)
         contentView.addSubview(timeLabel)
         contentView.addSubview(sizeLabel)
+        contentView.addSubview(progressTrackView)
+        progressTrackView.addSubview(progressFillView)
     }
 
     func setItemHighlighted(_ flag: Bool, theme: PresentationTheme) {
@@ -120,6 +139,9 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.thumbnailFetchDisposable = nil
         self.thumbnailView.image = nil
         self.highlightBackgroundView.isHidden = true
+        self.visiblePlaybackProgress = nil
+        self.progressTrackView.isHidden = true
+        self.progressFillView.frame = .zero
     }
 
     deinit {
@@ -183,9 +205,19 @@ final class MediaBrowserItemCell: UITableViewCell {
         senderLabel.frame = CGRect(x: senderLabelLeft, y: secondRowY, width: max(40.0, senderRight - senderLabelLeft), height: senderHeight)
         timeLabel.frame = CGRect(x: timeX, y: secondRowY, width: timeWidth, height: senderHeight)
         sizeLabel.frame = CGRect(x: sizeX, y: secondRowY, width: sizeWidth, height: senderHeight)
+
+        if let visiblePlaybackProgress {
+            let progressY = min(h - 8.0, secondRowY + senderHeight + 6.0)
+            let progressFrame = CGRect(x: textLeft, y: progressY, width: fullTextWidth, height: 3.0)
+            self.progressTrackView.frame = progressFrame
+            self.progressFillView.frame = CGRect(x: 0.0, y: 0.0, width: progressFrame.width * visiblePlaybackProgress, height: progressFrame.height)
+        } else {
+            self.progressTrackView.frame = .zero
+            self.progressFillView.frame = .zero
+        }
     }
 
-    func configure(with item: MediaBrowserItem, context: AccountContext, presentationData: PresentationData) {
+    func configure(with item: MediaBrowserItem, playbackProgress: CGFloat?, context: AccountContext, presentationData: PresentationData) {
         let theme = presentationData.theme
 
         self.fileNameLabel.text = item.fileName.isEmpty ? "Без названия" : item.fileName
@@ -218,6 +250,7 @@ final class MediaBrowserItemCell: UITableViewCell {
             self.sizeLabel.isHidden = true
         }
         self.sizeLabel.textColor = theme.list.itemSecondaryTextColor
+        self.updatePlaybackProgress(playbackProgress, for: item, presentationData: presentationData)
 
         let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
         self.thumbnailView.backgroundColor = placeholderColor
@@ -292,6 +325,30 @@ final class MediaBrowserItemCell: UITableViewCell {
         self.dualScenarioIcon.isHidden = !isDualScenario
         self.dualScenarioIcon.tintColor = theme.list.itemAccentColor
 
+        setNeedsLayout()
+    }
+
+    func updatePlaybackProgress(_ progress: CGFloat?, for item: MediaBrowserItem, presentationData: PresentationData) {
+        guard item.mediaType != .photo, let progress else {
+            self.visiblePlaybackProgress = nil
+            self.progressTrackView.isHidden = true
+            self.progressFillView.frame = .zero
+            setNeedsLayout()
+            return
+        }
+        let normalizedProgress = max(0.0, min(1.0, progress))
+        guard normalizedProgress >= 0.01 else {
+            self.visiblePlaybackProgress = nil
+            self.progressTrackView.isHidden = true
+            self.progressFillView.frame = .zero
+            setNeedsLayout()
+            return
+        }
+        let theme = presentationData.theme
+        self.visiblePlaybackProgress = normalizedProgress
+        self.progressTrackView.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
+        self.progressFillView.backgroundColor = theme.list.itemAccentColor
+        self.progressTrackView.isHidden = false
         setNeedsLayout()
     }
 

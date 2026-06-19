@@ -15,6 +15,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
     private let retryButton: UIButton
 
     private var items: [MediaBrowserItem] = []
+    private var playbackProgressByMessageId: [EngineMessage.Id: CGFloat] = [:]
     private var loadingState: MediaBrowserLoadingState = .idle
     private var selectedItemIndex: Int?
 
@@ -281,8 +282,48 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
     func updateItems(_ items: [MediaBrowserItem]) {
         self.items = items
+        let currentIds = Set(items.map(\.messageId))
+        self.playbackProgressByMessageId = self.playbackProgressByMessageId.filter { currentIds.contains($0.key) }
         self.emptyLabel.isHidden = !items.isEmpty || loadingState == .loading
         self.tableView.reloadData()
+    }
+
+    func mergePlaybackProgress(_ progressByMessageId: [EngineMessage.Id: CGFloat]) {
+        guard !progressByMessageId.isEmpty else { return }
+        let currentIds = Set(self.items.map(\.messageId))
+        var didUpdateVisibleCells = false
+        for (messageId, progress) in progressByMessageId where currentIds.contains(messageId) {
+            let normalizedProgress = max(0.0, min(1.0, progress))
+            if normalizedProgress >= 0.01 {
+                self.playbackProgressByMessageId[messageId] = normalizedProgress
+            } else {
+                self.playbackProgressByMessageId.removeValue(forKey: messageId)
+            }
+            if let index = self.items.firstIndex(where: { $0.messageId == messageId }),
+               let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? MediaBrowserItemCell {
+                let item = self.items[index]
+                cell.updatePlaybackProgress(self.playbackProgressByMessageId[messageId], for: item, presentationData: self.presentationData)
+                didUpdateVisibleCells = true
+            }
+        }
+        if !didUpdateVisibleCells {
+            self.tableView.reloadData()
+        }
+    }
+
+    func updatePlaybackProgress(for item: MediaBrowserItem?, progress: CGFloat) {
+        guard let item = item else { return }
+        let normalizedProgress = max(0.0, min(1.0, progress))
+        if normalizedProgress >= 0.01 {
+            self.playbackProgressByMessageId[item.messageId] = normalizedProgress
+        } else {
+            self.playbackProgressByMessageId.removeValue(forKey: item.messageId)
+        }
+        guard let index = self.items.firstIndex(where: { $0.messageId == item.messageId }),
+              let cell = self.tableView.cellForRow(at: IndexPath(row: index, section: 0)) as? MediaBrowserItemCell else {
+            return
+        }
+        cell.updatePlaybackProgress(self.playbackProgressByMessageId[item.messageId], for: item, presentationData: self.presentationData)
     }
 
     func updateLoadingState(_ state: MediaBrowserLoadingState) {
@@ -322,7 +363,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
         let cell = tableView.dequeueReusableCell(withIdentifier: MediaBrowserItemCell.reuseIdentifier, for: indexPath) as! MediaBrowserItemCell
         let item = self.items[indexPath.row]
-        cell.configure(with: item, context: self.context, presentationData: self.presentationData)
+        cell.configure(with: item, playbackProgress: self.playbackProgressByMessageId[item.messageId], context: self.context, presentationData: self.presentationData)
         cell.setItemHighlighted(indexPath.row == self.selectedItemIndex, theme: self.presentationData.theme)
         return cell
     }

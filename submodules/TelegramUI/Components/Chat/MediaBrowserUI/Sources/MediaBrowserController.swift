@@ -184,6 +184,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private let dataSource: MediaBrowserDataSource
     private let onTVSessionCoordinator: OnTVSessionCoordinator
+    private let playbackProgressStore: MediaPlaybackProgressStore
 
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
@@ -217,6 +218,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.contentNode.clipsToBounds = true
 
         self.playerNode = MediaBrowserPlayerNode(context: context, presentationData: presentationData)
+        self.playbackProgressStore = MediaPlaybackProgressStore(accountPeerId: context.account.peerId)
 
         self.dataSource = MediaBrowserDataSource(context: context, peerId: peerId)
         let syncConfiguration = Self.onTVSyncConfiguration()
@@ -277,9 +279,9 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.setupDimDismiss()
         self.setupDataSource()
 
-        self.playerNode.onToggleExpanded = { [weak self] in
+        self.playerNode.onToggleExpanded = { [weak self] isExpanded in
             guard let self = self else { return }
-            self.isExpanded.toggle()
+            self.isExpanded = isExpanded
             if let layout = self.validLayout {
                 self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.3, curve: .easeInOut))
             }
@@ -316,10 +318,18 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self?.onTVSessionCoordinator.handlePlaybackStatusChanged(status)
         }
         self.playerNode.onSeekRequested = { [weak self] position, progress in
-            self?.onTVSessionCoordinator.handleSeekRequested(position: position, progress: progress)
+            guard let self = self else { return }
+            let item = self.playerNode.displayedItem
+            self.playbackProgressStore.update(item: item, position: position, progress: progress)
+            self.onTVSessionCoordinator.handleSeekRequested(position: position, progress: progress)
+            self.listNode.updatePlaybackProgress(for: item, progress: progress)
         }
         self.playerNode.onPlaybackPositionUpdated = { [weak self] position, progress, isPlaying in
-            self?.onTVSessionCoordinator.handlePlaybackPositionUpdated(position: position, progress: progress, isPlaying: isPlaying)
+            guard let self = self else { return }
+            let item = self.playerNode.displayedItem
+            self.playbackProgressStore.update(item: item, position: position, progress: progress)
+            self.listNode.updatePlaybackProgress(for: item, progress: progress)
+            self.onTVSessionCoordinator.handlePlaybackPositionUpdated(position: position, progress: progress, isPlaying: isPlaying)
         }
     }
 
@@ -437,13 +447,13 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
         if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < self.loadedItems.count {
             let item = self.loadedItems[currentItemIndex]
-            self.playerNode.showItem(item)
+            self.playerNode.showItem(item, seekTo: self.playbackProgressStore.progress(for: item)?.position)
             self.listNode.setSelectedItemIndex(currentItemIndex)
             return item
         }
         if let firstItem = self.loadedItems.first {
             self.currentItemIndex = 0
-            self.playerNode.showItem(firstItem)
+            self.playerNode.showItem(firstItem, seekTo: self.playbackProgressStore.progress(for: firstItem)?.position)
             self.listNode.setSelectedItemIndex(0)
             return firstItem
         }
@@ -463,7 +473,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         )
         let nextItem = self.loadedItems[newIdx]
         self.currentItemIndex = newIdx
-        self.playerNode.showItem(nextItem)
+        self.playerNode.showItem(nextItem, seekTo: self.playbackProgressStore.progress(for: nextItem)?.position)
         self.listNode.setSelectedItemIndex(newIdx)
         if shouldCarryPulse {
             _ = self.onTVSessionCoordinator.startPulse(item: nextItem, position: 0.0, progress: 0.0)
@@ -554,14 +564,16 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.loadedItems = items
             self.onTVSessionCoordinator.registerLoadedItems(items)
             self.listNode.updateItems(items)
+            self.listNode.mergePlaybackProgress(self.playbackProgressStore.progressMap(for: items))
             self.listNode.setAvailableSenders(self.dataSource.uniqueSenders())
             if let displayedItem = self.playerNode.displayedItem {
                 self.currentItemIndex = items.firstIndex(where: { $0.messageId == displayedItem.messageId })
             } else if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < items.count {
-                self.playerNode.showItem(items[currentItemIndex])
+                let item = items[currentItemIndex]
+                self.playerNode.showItem(item, seekTo: self.playbackProgressStore.progress(for: item)?.position)
             } else if let first = items.first {
                 self.currentItemIndex = 0
-                self.playerNode.showItem(first)
+                self.playerNode.showItem(first, seekTo: self.playbackProgressStore.progress(for: first)?.position)
             } else {
                 self.currentItemIndex = nil
             }
@@ -576,7 +588,10 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
 
         self.onTVSessionCoordinator.onSessionsUpdated = { [weak self] sessions in
-            self?.onTVListNode.updateSessions(sessions)
+            guard let self = self else { return }
+            self.playbackProgressStore.update(sessions: sessions)
+            self.onTVListNode.updateSessions(sessions)
+            self.listNode.mergePlaybackProgress(self.playbackProgressStore.progressMap(for: self.loadedItems))
         }
         self.onTVSessionCoordinator.onUnresolvedSessionsUpdated = { [weak self] sessions in
             self?.onTVListNode.updateUnresolvedSessions(sessions)
@@ -650,7 +665,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                 progress: self.playerNode.currentPlaybackProgress()
             )
             self.currentItemIndex = self.loadedItems.firstIndex(where: { $0.messageId == item.messageId })
-            self.playerNode.showItem(item)
+            self.playerNode.showItem(item, seekTo: self.playbackProgressStore.progress(for: item)?.position)
             self.listNode.setSelectedItemIndex(self.currentItemIndex)
             if shouldCarryPulse {
                 _ = self.onTVSessionCoordinator.startPulse(item: item, position: 0.0, progress: 0.0)

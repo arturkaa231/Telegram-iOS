@@ -80,7 +80,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private var currentItem: MediaBrowserItem?
     private var suppressPulseCallback: Bool = false
 
-    var onToggleExpanded: (() -> Void)?
+    var onToggleExpanded: ((Bool) -> Void)?
 
     private var usesEmbeddedPlaybackChrome: Bool {
         if case .youtube = self.currentItem?.playableSource {
@@ -298,12 +298,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         self.muteButton.addTarget(self, action: #selector(muteTapped), for: .touchUpInside)
+        self.nightModeButton.addTarget(self, action: #selector(focusTapped), for: .touchUpInside)
         self.expandButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
         self.fitButton.addTarget(self, action: #selector(galleryTapped), for: .touchUpInside)
         self.shareButton.addTarget(self, action: #selector(shareTapped), for: .touchUpInside)
         self.chatButton.addTarget(self, action: #selector(chatTapped), for: .touchUpInside)
         self.deleteButton.addTarget(self, action: #selector(deleteTapped), for: .touchUpInside)
-        self.listButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        self.listButton.addTarget(self, action: #selector(listTapped), for: .touchUpInside)
         self.rewindButton.addTarget(self, action: #selector(rewindTapped), for: .touchUpInside)
         self.forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
         self.prevButton.addTarget(self, action: #selector(prevTapped), for: .touchUpInside)
@@ -577,11 +578,15 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     @objc private func expandTapped() {
-        self.isExpanded.toggle()
-        self.refreshExpandIcon()
-        self.refreshColors()
-        self.refreshPlayButtonVisibility()
-        self.onToggleExpanded?()
+        self.setExpanded(!self.isExpanded, notify: true)
+    }
+
+    @objc private func focusTapped() {
+        self.setExpanded(!self.isExpanded, notify: true)
+    }
+
+    @objc private func listTapped() {
+        self.setExpanded(false, notify: true)
     }
 
     @objc private func galleryTapped() {
@@ -765,12 +770,26 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
         let name = self.isExpanded ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right"
         self.expandButton.setImage(UIImage(systemName: name, withConfiguration: iconConfig), for: .normal)
+        let focusName = self.isExpanded ? "moon.fill" : "moon"
+        self.nightModeButton.setImage(UIImage(systemName: focusName, withConfiguration: iconConfig), for: .normal)
     }
 
     func setExpandedState(_ value: Bool) {
+        self.setExpanded(value, notify: false)
+    }
+
+    private func setExpanded(_ value: Bool, notify: Bool) {
         guard self.isExpanded != value else { return }
         self.isExpanded = value
         self.refreshExpandIcon()
+        self.refreshColors()
+        self.refreshPlayButtonVisibility()
+        if self.lastSize.width > 0.0 && self.lastSize.height > 0.0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
+        if notify {
+            self.onToggleExpanded?(value)
+        }
     }
 
     func updateLayout(size: CGSize, transition: ContainedViewLayoutTransition) {
