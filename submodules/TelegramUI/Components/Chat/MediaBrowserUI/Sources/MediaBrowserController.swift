@@ -225,6 +225,7 @@ public final class MediaBrowserController: ViewController {
 
 private class TouchBlockingView: UIView {
     var passThroughOutsideFrame: CGRect?
+    var passThroughAllTouches: Bool = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -236,11 +237,85 @@ private class TouchBlockingView: UIView {
     }
 
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if self.passThroughAllTouches {
+            return nil
+        }
         if let passThroughOutsideFrame = self.passThroughOutsideFrame, !passThroughOutsideFrame.contains(point) {
             return nil
         }
         let result = super.hitTest(point, with: event)
         return result ?? self
+    }
+}
+
+private final class MediaBrowserFocusOverlayWindow: UIWindow {
+    var interactiveFrame: CGRect?
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        if let interactiveFrame = self.interactiveFrame, !interactiveFrame.contains(point) {
+            return nil
+        }
+        let result = super.hitTest(point, with: event)
+        if result === self.rootViewController?.view {
+            return nil
+        }
+        return result
+    }
+}
+
+private final class MediaBrowserFocusOverlay {
+    private let window: MediaBrowserFocusOverlayWindow
+    private let rootViewController: UIViewController
+    private let rootNode: ASDisplayNode
+    private weak var playerNode: MediaBrowserPlayerNode?
+
+    init(windowScene: UIWindowScene) {
+        self.window = MediaBrowserFocusOverlayWindow(windowScene: windowScene)
+        self.rootViewController = UIViewController()
+        self.rootNode = ASDisplayNode()
+
+        self.window.frame = windowScene.coordinateSpace.bounds
+        self.window.windowLevel = .alert + 100.0
+        self.window.backgroundColor = .clear
+        self.window.isOpaque = false
+        self.window.rootViewController = self.rootViewController
+        self.rootViewController.view.backgroundColor = .clear
+        self.rootViewController.view.isOpaque = false
+        self.rootViewController.view.addSubview(self.rootNode.view)
+    }
+
+    func show(playerNode: MediaBrowserPlayerNode, transition: ContainedViewLayoutTransition) {
+        self.playerNode = playerNode
+        self.rootNode.addSubnode(playerNode)
+        self.window.isHidden = false
+        self.updateLayout(transition: transition)
+    }
+
+    func updateLayout(transition: ContainedViewLayoutTransition) {
+        let bounds = self.window.bounds
+        self.rootNode.frame = bounds
+
+        guard let playerNode = self.playerNode, bounds.width > 0.0, bounds.height > 0.0 else {
+            self.window.interactiveFrame = nil
+            return
+        }
+
+        let safeInsets = self.window.safeAreaInsets
+        let focusWidth = min(bounds.width - 24.0, 430.0)
+        let focusHeight = min(270.0, max(196.0, floor(focusWidth * 0.56)))
+        let focusX = floor((bounds.width - focusWidth) / 2.0)
+        let focusY = max(safeInsets.top + 64.0, 92.0)
+        let playerFrame = CGRect(x: focusX, y: focusY, width: focusWidth, height: focusHeight)
+
+        self.window.interactiveFrame = playerFrame
+        transition.updateFrame(node: playerNode, frame: playerFrame)
+        playerNode.updateLayout(size: playerFrame.size, safeInsets: .zero, transition: transition)
+    }
+
+    func hide() {
+        self.window.interactiveFrame = nil
+        self.window.isHidden = true
+        self.playerNode = nil
     }
 }
 
@@ -257,6 +332,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private let listNode: MediaBrowserListNode
     private let onTVListNode: OnTVSessionsListNode
     private let chatListNode: MediaBrowserChatListNode
+    private var focusOverlay: MediaBrowserFocusOverlay?
 
     private let dataSource: MediaBrowserDataSource
     private let onTVSessionCoordinator: OnTVSessionCoordinator
@@ -391,7 +467,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.playerNode.onToggleFocusMode = { [weak self] in
             guard let self = self else { return }
             self.isFocusMode.toggle()
-            self.playerNode.setFocusMode(self.isFocusMode)
+            self.updateFocusOverlay(transition: .animated(duration: 0.3, curve: .easeInOut))
             if let layout = self.validLayout {
                 self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.3, curve: .easeInOut))
             }
@@ -447,8 +523,47 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     deinit {
+        self.updateFocusOverlay(enabled: false, transition: .immediate)
         self.flushCurrentLocalProgress()
         self.stopActiveOnTVSessionForExit()
+    }
+
+    private func currentWindowScene() -> UIWindowScene? {
+        return UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first(where: { scene in
+                scene.activationState == .foregroundActive && scene.windows.contains(where: { $0.isKeyWindow })
+            })
+    }
+
+    private func updateFocusOverlay(transition: ContainedViewLayoutTransition) {
+        self.updateFocusOverlay(enabled: self.isFocusMode, transition: transition)
+    }
+
+    private func updateFocusOverlay(enabled: Bool, transition: ContainedViewLayoutTransition) {
+        self.playerNode.setFocusMode(enabled)
+
+        if enabled {
+            guard let windowScene = self.currentWindowScene() else {
+                return
+            }
+            let overlay: MediaBrowserFocusOverlay
+            if let current = self.focusOverlay {
+                overlay = current
+            } else {
+                overlay = MediaBrowserFocusOverlay(windowScene: windowScene)
+                self.focusOverlay = overlay
+            }
+            self.playerNode.removeFromSupernode()
+            overlay.show(playerNode: self.playerNode, transition: transition)
+        } else {
+            self.focusOverlay?.hide()
+            if self.playerNode.supernode !== self.contentNode {
+                self.playerNode.removeFromSupernode()
+                self.contentNode.addSubnode(self.playerNode)
+            }
+            self.focusOverlay = nil
+        }
     }
 
     private static let defaultDevelopmentOnTVSyncEndpoint = "http://192.168.1.76:4010"
@@ -945,22 +1060,23 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         if isChatPicker {
             playerFrame = .zero
         } else if self.isFocusMode {
-            let focusWidth = min(contentFrame.width - 24.0, 430.0)
-            let focusHeight = min(270.0, max(196.0, floor(focusWidth * 0.56)))
-            let focusX = floor((contentFrame.width - focusWidth) / 2.0)
-            let focusY = max(layout.safeInsets.top + 64.0, 92.0)
-            playerFrame = CGRect(x: focusX, y: focusY, width: focusWidth, height: focusHeight)
+            playerFrame = .zero
         } else if listVisible {
             playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height * 0.35)
         } else {
             playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height)
         }
-        transition.updateFrame(node: self.playerNode, frame: playerFrame)
-        self.playerNode.updateLayout(size: playerFrame.size, safeInsets: .zero, transition: transition)
-        transition.updateAlpha(node: self.playerNode, alpha: isChatPicker ? 0.0 : 1.0)
+        if self.isFocusMode {
+            self.focusOverlay?.updateLayout(transition: transition)
+        } else {
+            transition.updateFrame(node: self.playerNode, frame: playerFrame)
+            self.playerNode.updateLayout(size: playerFrame.size, safeInsets: .zero, transition: transition)
+            transition.updateAlpha(node: self.playerNode, alpha: isChatPicker ? 0.0 : 1.0)
+        }
 
         if let touchView = self.view as? TouchBlockingView {
-            touchView.passThroughOutsideFrame = self.isFocusMode ? playerFrame : nil
+            touchView.passThroughAllTouches = self.isFocusMode
+            touchView.passThroughOutsideFrame = nil
         }
 
         let playerHeight = playerFrame.height
