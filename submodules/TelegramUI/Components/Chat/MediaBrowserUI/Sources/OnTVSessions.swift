@@ -157,9 +157,14 @@ protocol OnTVSessionsStore: AnyObject {
     func startPulse(item: MediaBrowserItem, position: Double, progress: CGFloat) -> OnTVPlaybackContext
     func endPulse(for item: MediaBrowserItem?, position: Double, progress: CGFloat) -> OnTVPlaybackContext?
     func endHeldPulses(for item: MediaBrowserItem?, position: Double, progress: CGFloat) -> [OnTVPlaybackContext]
+    func endHeldSession(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext?
     func leave(_ sessionId: String) -> OnTVPlaybackContext?
     func activate(_ sessionId: String) -> OnTVSessionActivation?
-    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat)
+    @discardableResult
+    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext?
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)?)
+    func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void)
+    func savedRecord(for item: MediaBrowserItem, completion: @escaping (MediaBrowserProgressRecord?) -> Void)
     func sendPlayerEvent(_ event: OnTVPlayerEvent)
 }
 
@@ -180,7 +185,9 @@ protocol OnTVSessionsTransport: AnyObject {
 final class LocalOnTVSessionsStore: OnTVSessionsStore {
     private var peerId: EnginePeer.Id
     private let accountPeerId: EnginePeer.Id
+    private let progressStore: MediaBrowserProgressStore?
     private var sessionsByPeer: [EnginePeer.Id: [OnTVPlaybackContext]] = [:]
+    private var loadedItemsByMessageId: [EngineMessage.Id: MediaBrowserItem] = [:]
 
     var onSessionsUpdated: (([OnTVPlaybackContext]) -> Void)?
     var onUnresolvedSessionsUpdated: (([OnTVRemotePlaybackContext]) -> Void)?
@@ -194,21 +201,26 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         return true
     }
 
-    init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id) {
+    init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id, progressStore: MediaBrowserProgressStore? = nil) {
         self.peerId = peerId
         self.accountPeerId = accountPeerId
+        self.progressStore = progressStore
     }
 
     func switchPeer(_ peerId: EnginePeer.Id) {
         self.peerId = peerId
-        self.emit()
     }
 
     func registerLoadedItems(_ items: [MediaBrowserItem]) {
+        for item in items {
+            self.loadedItemsByMessageId[item.messageId] = item
+        }
     }
 
     func reload() {
         self.emit()
+        self.onUnresolvedSessionsUpdated?([])
+        self.onResolvingSessionsChanged?(false)
     }
 
     func startPulse(item: MediaBrowserItem, position: Double, progress: CGFloat) -> OnTVPlaybackContext {
@@ -242,7 +254,9 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         }
         self.sessionsByPeer[self.peerId] = self.trimEndedHistory(sessions)
         self.emit()
-        return self.sessionsByPeer[self.peerId]?.first(where: { $0.fileId == item.messageId }) ?? sessions[0]
+        let context = self.sessionsByPeer[self.peerId]?.first(where: { $0.fileId == item.messageId }) ?? sessions[0]
+        self.progressStore?.upsert(context: context)
+        return context
     }
 
     func endPulse(for item: MediaBrowserItem?, position: Double, progress: CGFloat) -> OnTVPlaybackContext? {
@@ -257,7 +271,43 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         }
         self.sessionsByPeer[self.peerId] = self.trimEndedHistory(result.sessions)
         self.emit()
+        for session in result.ended {
+            self.progressStore?.upsert(context: session)
+        }
         return result.ended
+    }
+
+    func endHeldSession(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext? {
+        var changedCurrentPeer = false
+        var endedSession: OnTVPlaybackContext?
+        let endedAt = Date()
+        for peerKey in Array(self.sessionsByPeer.keys) {
+            guard var sessions = self.sessionsByPeer[peerKey],
+                  let index = sessions.firstIndex(where: { $0.sessionId == sessionId }),
+                  sessions[index].status == .live,
+                  sessions[index].pulseUserId == self.accountPeerId else {
+                continue
+            }
+            sessions[index].position = position
+            sessions[index].progress = progress
+            sessions[index].pulseUserId = nil
+            sessions[index].status = .ended
+            sessions[index].endedAt = endedAt
+            sessions[index].participantCount = 0
+            endedSession = sessions[index]
+            self.sessionsByPeer[peerKey] = self.trimEndedHistory(sessions)
+            if peerKey == self.peerId {
+                changedCurrentPeer = true
+            }
+            break
+        }
+        if changedCurrentPeer {
+            self.emit()
+        }
+        if let endedSession = endedSession {
+            self.progressStore?.upsert(context: endedSession)
+        }
+        return endedSession
     }
 
     func leave(_ sessionId: String) -> OnTVPlaybackContext? {
@@ -294,14 +344,17 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         }
     }
 
-    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat) {
+    @discardableResult
+    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext? {
         var changedCurrentPeer = false
+        var updatedContext: OnTVPlaybackContext?
         for peerKey in Array(self.sessionsByPeer.keys) {
             guard var sessions = self.sessionsByPeer[peerKey], let index = sessions.firstIndex(where: { $0.sessionId == sessionId }) else {
                 continue
             }
             sessions[index].position = position
             sessions[index].progress = progress
+            updatedContext = sessions[index]
             self.sessionsByPeer[peerKey] = self.trimEndedHistory(sessions)
             if peerKey == self.peerId {
                 changedCurrentPeer = true
@@ -310,6 +363,11 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         if changedCurrentPeer {
             self.emit()
         }
+        if let session = updatedContext ?? self.sessionsByPeer.values.flatMap({ $0 }).first(where: { $0.sessionId == sessionId }) {
+            self.progressStore?.upsert(context: session)
+            return session
+        }
+        return nil
     }
 
     func sendPlayerEvent(_ event: OnTVPlayerEvent) {
@@ -334,6 +392,9 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         }
         if changedCurrentPeer {
             self.emit()
+        }
+        if let session = self.sessionsByPeer.values.flatMap({ $0 }).first(where: { $0.sessionId == event.sessionId }) {
+            self.progressStore?.upsert(context: session)
         }
     }
 
@@ -369,6 +430,9 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
         if changedCurrentPeer {
             self.emit()
         }
+        if let session = self.sessionsByPeer.values.flatMap({ $0 }).first(where: { $0.sessionId == event.sessionId }) {
+            self.progressStore?.upsert(context: session)
+        }
     }
 
     func mergeRemoteContexts(_ contexts: [OnTVPlaybackContext], peerId: EnginePeer.Id) {
@@ -379,11 +443,37 @@ final class LocalOnTVSessionsStore: OnTVSessionsStore {
             return
         }
         let remoteSessionIds = Set(contexts.map { $0.sessionId })
-        let existing = (self.sessionsByPeer[peerId] ?? []).filter { !remoteSessionIds.contains($0.sessionId) }
+        let remoteFileIds = Set(contexts.map { $0.fileId })
+        let existing = (self.sessionsByPeer[peerId] ?? []).filter { !remoteSessionIds.contains($0.sessionId) && !remoteFileIds.contains($0.fileId) }
         self.sessionsByPeer[peerId] = self.trimEndedHistory(contexts + existing)
+        self.progressStore?.mergeRemoteContexts(contexts, chatId: peerId)
         if peerId == self.peerId {
             self.emit()
         }
+    }
+
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
+        if let progressStore = self.progressStore {
+            progressStore.upsert(item: item, chatId: self.peerId, position: position, progress: progress, endedAt: endedAt, completion: completion)
+        } else {
+            completion?()
+        }
+    }
+
+    func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void) {
+        guard let progressStore = self.progressStore else {
+            completion(nil)
+            return
+        }
+        progressStore.savedPosition(for: item, chatId: self.peerId, completion: completion)
+    }
+
+    func savedRecord(for item: MediaBrowserItem, completion: @escaping (MediaBrowserProgressRecord?) -> Void) {
+        guard let progressStore = self.progressStore else {
+            completion(nil)
+            return
+        }
+        progressStore.savedRecord(for: item, chatId: self.peerId, completion: completion)
     }
 
     private func emit() {
@@ -450,11 +540,13 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     private let transport: OnTVSessionsTransport
     private var peerId: EnginePeer.Id
     private let accountPeerId: EnginePeer.Id
+    private var locallyHeldSessionIds = Set<String>()
     private var loadedItemsByMessageId: [EngineMessage.Id: MediaBrowserItem] = [:]
     private var pendingRemoteContextsByPeer: [EnginePeer.Id: [OnTVRemotePlaybackContext]] = [:]
     private var unresolvedRemoteContextIdsByPeer: [EnginePeer.Id: Set<String>] = [:]
     private var requestedDirectMessageIds = Set<EngineMessage.Id>()
     private var requestedMoreMediaForPeer: Set<EnginePeer.Id> = []
+    private var recentlyEndedHeldSessionIds: [String: Date] = [:]
 
     var onSessionsUpdated: (([OnTVPlaybackContext]) -> Void)? {
         didSet {
@@ -472,13 +564,16 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
         return true
     }
 
-    init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id, transport: OnTVSessionsTransport) {
+    init(peerId: EnginePeer.Id, accountPeerId: EnginePeer.Id, transport: OnTVSessionsTransport, progressStore: MediaBrowserProgressStore? = nil) {
         self.peerId = peerId
         self.accountPeerId = accountPeerId
         self.transport = transport
-        self.localStore = LocalOnTVSessionsStore(peerId: peerId, accountPeerId: accountPeerId)
+        self.localStore = LocalOnTVSessionsStore(peerId: peerId, accountPeerId: accountPeerId, progressStore: progressStore)
         self.transport.onSessionEvent = { [weak self] event in
             guard let self = self else { return }
+            if case let .pulseEnded(sessionId, _, _, _) = event {
+                self.locallyHeldSessionIds.remove(sessionId)
+            }
             self.localStore.apply(event)
             self.onSessionEvent?(event)
         }
@@ -524,10 +619,11 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     func startPulse(item: MediaBrowserItem, position: Double, progress: CGFloat) -> OnTVPlaybackContext {
         let endedSessions = self.localStore.endHeldPulses(for: nil, position: position, progress: progress).filter { $0.fileId != item.messageId }
         for endedSession in endedSessions {
-            self.transport.sendPlaybackContext(endedSession)
-            self.transport.sendSessionEvent(.pulseEnded(sessionId: endedSession.sessionId, endedAt: endedSession.endedAt ?? Date(), position: endedSession.position, progress: endedSession.progress))
+            self.sendEndedHeldSession(endedSession)
         }
         let session = self.localStore.startPulse(item: item, position: position, progress: progress)
+        self.recentlyEndedHeldSessionIds.removeValue(forKey: session.sessionId)
+        self.locallyHeldSessionIds.insert(session.sessionId)
         self.transport.sendPlaybackContext(session)
         self.transport.sendSessionEvent(.pulseTaken(sessionId: session.sessionId, pulseUserId: self.accountPeerId))
         self.transport.sendPlayerEvent(.state(sessionId: session.sessionId, position: position, progress: progress))
@@ -541,10 +637,17 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
     func endHeldPulses(for item: MediaBrowserItem?, position: Double, progress: CGFloat) -> [OnTVPlaybackContext] {
         let sessions = self.localStore.endHeldPulses(for: item, position: position, progress: progress)
         for session in sessions {
-            self.transport.sendPlaybackContext(session)
-            self.transport.sendSessionEvent(.pulseEnded(sessionId: session.sessionId, endedAt: session.endedAt ?? Date(), position: session.position, progress: session.progress))
+            self.sendEndedHeldSession(session)
         }
         return sessions
+    }
+
+    func endHeldSession(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext? {
+        guard let session = self.localStore.endHeldSession(sessionId: sessionId, position: position, progress: progress) else {
+            return nil
+        }
+        self.sendEndedHeldSession(session)
+        return session
     }
 
     func leave(_ sessionId: String) -> OnTVPlaybackContext? {
@@ -564,6 +667,8 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
             self.transport.sendSessionEvent(.participantJoined(sessionId: context.sessionId, participantCount: context.participantCount))
             return .joined(context)
         case let .resumed(context):
+            self.recentlyEndedHeldSessionIds.removeValue(forKey: context.sessionId)
+            self.locallyHeldSessionIds.insert(context.sessionId)
             self.transport.sendPlaybackContext(context)
             self.transport.sendSessionEvent(.pulseTaken(sessionId: context.sessionId, pulseUserId: self.accountPeerId))
             self.transport.sendPlayerEvent(.state(sessionId: context.sessionId, position: context.position, progress: context.progress))
@@ -573,8 +678,25 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
         }
     }
 
-    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat) {
-        self.localStore.updatePlaybackProgress(sessionId: sessionId, position: position, progress: progress)
+    @discardableResult
+    func updatePlaybackProgress(sessionId: String, position: Double, progress: CGFloat) -> OnTVPlaybackContext? {
+        let context = self.localStore.updatePlaybackProgress(sessionId: sessionId, position: position, progress: progress)
+        if let context = context, context.pulseUserId == self.accountPeerId, !self.isRecentlyEndedHeldSession(context.sessionId) {
+            self.transport.sendPlaybackContext(context)
+        }
+        return context
+    }
+
+    func saveLocalProgress(item: MediaBrowserItem, position: Double, progress: CGFloat, endedAt: Date?, completion: (() -> Void)? = nil) {
+        self.localStore.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt, completion: completion)
+    }
+
+    func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void) {
+        self.localStore.savedPosition(for: item, completion: completion)
+    }
+
+    func savedRecord(for item: MediaBrowserItem, completion: @escaping (MediaBrowserProgressRecord?) -> Void) {
+        self.localStore.savedRecord(for: item, completion: completion)
     }
 
     func sendPlayerEvent(_ event: OnTVPlayerEvent) {
@@ -582,10 +704,18 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
         self.transport.sendPlayerEvent(event)
     }
 
+    private func sendEndedHeldSession(_ session: OnTVPlaybackContext) {
+        self.markRecentlyEndedHeldSession(session.sessionId)
+        self.locallyHeldSessionIds.remove(session.sessionId)
+        self.transport.sendPlaybackContext(session)
+        self.transport.sendSessionEvent(.pulseEnded(sessionId: session.sessionId, endedAt: session.endedAt ?? Date(), position: session.position, progress: session.progress))
+    }
+
     private func applyRemoteContexts(_ contexts: [OnTVRemotePlaybackContext], chatId: EnginePeer.Id) {
-        self.pendingRemoteContextsByPeer[chatId] = contexts
+        NSLog("[MultigramOnTV] Remote contexts chatId=%lld count=%d sessions=%@", chatId.toInt64(), contexts.count, contexts.map { "\($0.sessionId):\($0.status == .live ? "LIVE" : "ENDED"):\($0.pulseUserId?.toInt64() ?? 0)" }.joined(separator: ","))
+        self.pendingRemoteContextsByPeer[chatId] = self.endingStaleOwnRemoteContexts(contexts)
         self.requestedMoreMediaForPeer.remove(chatId)
-        if contexts.isEmpty {
+        if self.pendingRemoteContextsByPeer[chatId]?.isEmpty != false {
             self.unresolvedRemoteContextIdsByPeer[chatId] = []
             self.updateResolvingState(for: chatId)
             self.emitUnresolvedRemoteContexts(for: chatId)
@@ -600,10 +730,12 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
         }
         let hydratedContexts = remoteContexts.compactMap { remoteContext -> OnTVPlaybackContext? in
             guard let item = self.matchingLoadedItem(for: remoteContext, chatId: chatId) else {
+                NSLog("[MultigramOnTV] Remote context unresolved chatId=%lld sessionId=%@ fileId=%@", chatId.toInt64(), remoteContext.sessionId, remoteContext.fileId)
                 return nil
             }
             return remoteContext.playbackContext(item: item)
         }
+        NSLog("[MultigramOnTV] Remote contexts hydrated chatId=%lld hydrated=%d unresolved=%d", chatId.toInt64(), hydratedContexts.count, remoteContexts.count - hydratedContexts.count)
         self.localStore.mergeRemoteContexts(hydratedContexts, peerId: chatId)
 
         let hydratedIds = Set(hydratedContexts.map { $0.sessionId })
@@ -627,6 +759,66 @@ final class SyncedOnTVSessionsStore: OnTVSessionsStore {
             self.onNeedsMoreMediaItems?()
         }
         self.updateResolvingState(for: chatId)
+    }
+
+    private func endingStaleOwnRemoteContexts(_ contexts: [OnTVRemotePlaybackContext]) -> [OnTVRemotePlaybackContext] {
+        self.pruneRecentlyEndedHeldSessions()
+        let endedAt = Date()
+        return contexts.map { context in
+            guard context.status == .live,
+                  context.pulseUserId == self.accountPeerId,
+                  self.isRecentlyEndedHeldSession(context.sessionId),
+                  !self.locallyHeldSessionIds.contains(context.sessionId) else {
+                return context
+            }
+
+            self.transport.sendSessionEvent(.pulseEnded(
+                sessionId: context.sessionId,
+                endedAt: endedAt,
+                position: context.position,
+                progress: context.progress
+            ))
+            let endedContext = OnTVRemotePlaybackContext(
+                sessionId: context.sessionId,
+                chatId: context.chatId,
+                fileId: context.fileId,
+                fileName: context.fileName,
+                fileSize: context.fileSize,
+                mediaType: context.mediaType,
+                timestamp: context.timestamp,
+                position: context.position,
+                progress: context.progress,
+                pulseUserId: nil,
+                status: .ended,
+                endedAt: endedAt,
+                participantCount: 0
+            )
+            if let item = self.matchingLoadedItem(for: endedContext, chatId: endedContext.chatId) {
+                self.transport.sendPlaybackContext(endedContext.playbackContext(item: item))
+            }
+            self.markRecentlyEndedHeldSession(context.sessionId)
+            return endedContext
+        }
+    }
+
+    private func markRecentlyEndedHeldSession(_ sessionId: String) {
+        self.pruneRecentlyEndedHeldSessions()
+        self.recentlyEndedHeldSessionIds[sessionId] = Date()
+    }
+
+    private func isRecentlyEndedHeldSession(_ sessionId: String) -> Bool {
+        self.pruneRecentlyEndedHeldSessions()
+        return self.recentlyEndedHeldSessionIds[sessionId] != nil
+    }
+
+    private func pruneRecentlyEndedHeldSessions() {
+        guard !self.recentlyEndedHeldSessionIds.isEmpty else {
+            return
+        }
+        let now = Date()
+        self.recentlyEndedHeldSessionIds = self.recentlyEndedHeldSessionIds.filter { _, endedAt in
+            now.timeIntervalSince(endedAt) < 8.0
+        }
     }
 
     private func updateResolvingState(for chatId: EnginePeer.Id) {
@@ -1008,7 +1200,7 @@ final class ServerOnTVSessionsTransport: NSObject, OnTVSessionsTransport, URLSes
 
     private static func remoteContext(from object: [String: Any], fallbackChatId: EnginePeer.Id?) -> OnTVRemotePlaybackContext? {
         guard let sessionId = object["sessionId"] as? String,
-              let chatId = Self.peerId(from: object["chatId"]) ?? fallbackChatId,
+              let chatId = fallbackChatId ?? Self.peerId(from: object["chatId"]),
               let fileId = object["fileId"] as? String else {
             return nil
         }

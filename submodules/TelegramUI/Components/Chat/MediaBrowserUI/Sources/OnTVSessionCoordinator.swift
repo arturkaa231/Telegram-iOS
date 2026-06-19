@@ -14,6 +14,8 @@ final class OnTVSessionCoordinator {
     private var lastSentPlaybackIsPlaying: Bool?
     private var lastLocalProgressUpdateAt: Double = 0.0
     private var lastLocalProgressPosition: Double = 0.0
+    private var lastSavedLocalProgressAt: Double = 0.0
+    private var lastSavedLocalProgressPosition: Double = 0.0
     private var lastRemoteStateSentAt: Double = 0.0
     private var lastRemoteStatePosition: Double = 0.0
     private var pendingHolderSessionId: String?
@@ -53,8 +55,10 @@ final class OnTVSessionCoordinator {
     var onOpenSession: ((OnTVPlaybackContext, Bool) -> Void)?
     var onApplyRemotePlaybackAction: ((Double, CGFloat, Bool) -> Void)?
     var onApplyRemotePlaybackState: ((Double, CGFloat) -> Void)?
+    var onLocalProgressSaved: (() -> Void)?
     var currentPlaybackState: (() -> (position: Double, progress: CGFloat))?
     var currentPlaybackIsPlaying: (() -> Bool)?
+    var currentDisplayedItem: (() -> MediaBrowserItem?)?
 
     init(store: OnTVSessionsStore, accountPeerId: EnginePeer.Id) {
         self.store = store
@@ -75,8 +79,8 @@ final class OnTVSessionCoordinator {
     }
 
     func switchPeer(_ peerId: EnginePeer.Id) {
-        self.leaveActiveViewerSessionIfNeeded()
-        self.clearActiveSession()
+        let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+        self.stopActiveSessionForExit(displayedItem: self.currentDisplayedItem?(), position: state.position, progress: state.progress)
         self.store.switchPeer(peerId)
     }
 
@@ -89,9 +93,15 @@ final class OnTVSessionCoordinator {
     }
 
     func prepareForLocalItemChange(isPulseActive: Bool, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) -> Bool {
+        if let displayedItem = displayedItem {
+            self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: nil)
+        }
         let shouldCarryPulse = self.activeSessionIsHolder && isPulseActive
         if shouldCarryPulse {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.clearActiveSession()
         } else {
             self.leaveActiveViewerSessionIfNeeded()
@@ -100,8 +110,14 @@ final class OnTVSessionCoordinator {
     }
 
     func stopForLocalItemSelection(isPulseActive: Bool, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
+        if let displayedItem = displayedItem {
+            self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: nil)
+        }
         if isPulseActive || self.activeSessionIsHolder {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.onPulseActiveChanged?(false, true)
             self.onAudienceChanged?(0)
             self.clearActiveSession()
@@ -113,7 +129,7 @@ final class OnTVSessionCoordinator {
     func startPulse(item: MediaBrowserItem, position: Double, progress: CGFloat) -> OnTVPlaybackContext {
         let session = self.store.startPulse(item: item, position: position, progress: progress)
         self.pendingHolderSessionId = session.sessionId
-        self.ignorePulseOffUntil = Date().timeIntervalSince1970 + 1.0
+        self.ignorePulseOffUntil = Date().timeIntervalSince1970 + 2.0
         self.setActiveSession(session.sessionId, isHolder: true)
         self.onPulseActiveChanged?(true, true)
         self.onAudienceChanged?(session.participantCount)
@@ -147,13 +163,31 @@ final class OnTVSessionCoordinator {
             }
             self.pendingHolderSessionId = nil
             self.ignorePulseOffUntil = 0.0
-            let sessions = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            var sessions = self.endActiveHeldSession(position: position, progress: progress)
+            if sessions.isEmpty {
+                sessions = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.clearActiveSession()
             self.onAudienceChanged?(sessions.first?.participantCount ?? 0)
         }
     }
 
     func handlePlaybackStatusChanged(_ status: MediaPreviewPlaybackStatus) {
+        switch status {
+        case .paused:
+            if let item = self.currentDisplayedItem?() {
+                let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+                self.saveLocalProgressIfNeeded(item: item, position: state.position, progress: state.progress, force: true, endedAt: nil)
+            }
+        case .ended:
+            if let item = self.currentDisplayedItem?() {
+                let state = self.currentPlaybackState?() ?? (position: 0.0, progress: 0.0)
+                self.saveLocalProgressIfNeeded(item: item, position: state.position, progress: state.progress, force: true, endedAt: Date())
+            }
+        case .idle, .loading, .playing, .error:
+            break
+        }
+
         if self.activeSessionIsHolder {
             switch status {
             case .playing:
@@ -194,6 +228,10 @@ final class OnTVSessionCoordinator {
     }
 
     func handlePlaybackPositionUpdated(position: Double, progress: CGFloat, isPlaying: Bool) {
+        if let item = self.currentDisplayedItem?() {
+            self.saveLocalProgressIfNeeded(item: item, position: position, progress: progress, force: false, endedAt: nil)
+        }
+
         guard let sessionId = self.activeSessionId else {
             return
         }
@@ -213,6 +251,21 @@ final class OnTVSessionCoordinator {
         }
     }
 
+    func flushLocalProgress(displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat, endedAt: Date? = nil) {
+        guard let displayedItem = displayedItem else {
+            return
+        }
+        self.saveLocalProgressIfNeeded(item: displayedItem, position: position, progress: progress, force: true, endedAt: endedAt)
+    }
+
+    func savedPosition(for item: MediaBrowserItem, completion: @escaping (Double?) -> Void) {
+        self.store.savedPosition(for: item, completion: completion)
+    }
+
+    func savedRecord(for item: MediaBrowserItem, completion: @escaping (MediaBrowserProgressRecord?) -> Void) {
+        self.store.savedRecord(for: item, completion: completion)
+    }
+
     func activateSession(_ session: OnTVPlaybackContext, displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
         if self.activeSessionId == session.sessionId && self.activeSessionIsHolder {
             self.onFlashLockedSession?(session.sessionId)
@@ -220,7 +273,10 @@ final class OnTVSessionCoordinator {
         }
 
         if self.activeSessionIsHolder {
-            _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
             self.onPulseActiveChanged?(false, true)
             self.onAudienceChanged?(0)
             self.clearActiveSession()
@@ -256,6 +312,20 @@ final class OnTVSessionCoordinator {
         self.onAudienceChanged?(session?.participantCount ?? 0)
     }
 
+    func stopActiveSessionForExit(displayedItem: MediaBrowserItem?, position: Double, progress: CGFloat) {
+        if self.activeSessionIsHolder {
+            let endedSessions = self.endActiveHeldSession(position: position, progress: progress)
+            if endedSessions.isEmpty {
+                _ = self.store.endHeldPulses(for: displayedItem, position: position, progress: progress)
+            }
+            self.clearActiveSession()
+            self.onPulseActiveChanged?(false, false)
+            self.onAudienceChanged?(0)
+        } else {
+            self.leaveActiveViewerSessionIfNeeded()
+        }
+    }
+
     private func setActiveSession(_ sessionId: String, isHolder: Bool) {
         self.activeSessionId = sessionId
         self.activeSessionIsHolder = isHolder
@@ -263,6 +333,8 @@ final class OnTVSessionCoordinator {
         self.lastSentPlaybackIsPlaying = nil
         self.lastLocalProgressUpdateAt = 0.0
         self.lastLocalProgressPosition = 0.0
+        self.lastSavedLocalProgressAt = 0.0
+        self.lastSavedLocalProgressPosition = 0.0
         self.lastRemoteStateSentAt = 0.0
         self.lastRemoteStatePosition = 0.0
         self.onActiveHeldSessionChanged?(isHolder ? sessionId : nil)
@@ -275,11 +347,23 @@ final class OnTVSessionCoordinator {
         self.lastSentPlaybackIsPlaying = nil
         self.lastLocalProgressUpdateAt = 0.0
         self.lastLocalProgressPosition = 0.0
+        self.lastSavedLocalProgressAt = 0.0
+        self.lastSavedLocalProgressPosition = 0.0
         self.lastRemoteStateSentAt = 0.0
         self.lastRemoteStatePosition = 0.0
         self.pendingHolderSessionId = nil
         self.ignorePulseOffUntil = 0.0
         self.onActiveHeldSessionChanged?(nil)
+    }
+
+    private func endActiveHeldSession(position: Double, progress: CGFloat) -> [OnTVPlaybackContext] {
+        guard let sessionId = self.activeSessionId, self.activeSessionIsHolder else {
+            return []
+        }
+        guard let session = self.store.endHeldSession(sessionId: sessionId, position: position, progress: progress) else {
+            return []
+        }
+        return [session]
     }
 
     private func sendActivePlayerAction(isPlaying: Bool) {
@@ -297,6 +381,18 @@ final class OnTVSessionCoordinator {
             progress: playbackState.progress,
             isPlaying: isPlaying
         ))
+    }
+
+    private func saveLocalProgressIfNeeded(item: MediaBrowserItem, position: Double, progress: CGFloat, force: Bool, endedAt: Date?) {
+        let now = Date().timeIntervalSince1970
+        if !force && now - self.lastSavedLocalProgressAt < 1.5 && abs(position - self.lastSavedLocalProgressPosition) < 2.0 {
+            return
+        }
+        self.lastSavedLocalProgressAt = now
+        self.lastSavedLocalProgressPosition = position
+        self.store.saveLocalProgress(item: item, position: position, progress: progress, endedAt: endedAt, completion: { [weak self] in
+            self?.onLocalProgressSaved?()
+        })
     }
 
     private func handleRemotePlayerEvent(_ event: OnTVPlayerEvent) {
@@ -349,7 +445,7 @@ final class OnTVSessionCoordinator {
             guard self.activeSessionId == sessionId else {
                 return
             }
-            if self.pendingHolderSessionId == sessionId && Date().timeIntervalSince1970 < self.ignorePulseOffUntil {
+            if self.activeSessionIsHolder && Date().timeIntervalSince1970 < self.ignorePulseOffUntil {
                 self.onPulseActiveChanged?(true, false)
                 return
             }

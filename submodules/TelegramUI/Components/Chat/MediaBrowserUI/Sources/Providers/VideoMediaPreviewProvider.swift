@@ -137,6 +137,9 @@ final class VideoPreviewNode: ASDisplayNode, MediaPreviewNode {
     }
 
     func seek(to timestamp: Double) {
+        if self.videoNode == nil {
+            self.attachVideoNode()
+        }
         self.videoNode?.seek(timestamp)
     }
 
