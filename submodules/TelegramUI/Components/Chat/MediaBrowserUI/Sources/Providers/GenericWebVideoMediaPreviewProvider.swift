@@ -27,6 +27,9 @@ public final class GenericWebVideoMediaPreviewProvider: MediaPreviewProvider {
 }
 
 final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScriptMessageHandler, WKNavigationDelegate {
+    private static let minimumPlayableDuration: Double = 1.0
+    private static let minimumDurationDelta: Double = 0.05
+
     private let item: MediaBrowserItem
     private let context: AccountContext
     private var presentationData: PresentationData
@@ -230,14 +233,20 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.statusLabel.isHidden = true
             self.openExternallyButton.isHidden = true
         case "time":
-            let timestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
-            let duration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
-            if duration <= 0.0 && self.lastDuration <= 0.0 {
+            let rawTimestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
+            let rawDuration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
+            let duration: Double
+            if rawDuration >= Self.minimumPlayableDuration {
+                duration = rawDuration
+            } else if self.lastDuration >= Self.minimumPlayableDuration {
+                duration = self.lastDuration
+            } else {
                 return
             }
-            let timestampChanged = abs(timestamp - self.lastTimestamp) >= 0.05
-            let durationChanged = abs(duration - self.lastDuration) >= 0.05
-            guard timestampChanged || durationChanged || duration > 0.0 else {
+            let timestamp = min(max(0.0, rawTimestamp), duration)
+            let timestampChanged = abs(timestamp - self.lastTimestamp) >= Self.minimumDurationDelta
+            let durationChanged = abs(duration - self.lastDuration) >= Self.minimumDurationDelta
+            guard timestampChanged || durationChanged else {
                 return
             }
             self.lastTimestamp = timestamp
@@ -254,11 +263,14 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         if let explicitStatus = explicitStatus {
             self.currentPlaybackStatus = explicitStatus
         }
-        if !self.hasPlayableVideo && self.lastDuration <= 0.0 {
+        if !self.hasPlayableVideo && self.lastDuration < Self.minimumPlayableDuration {
             return
         }
-        let duration = max(0.0, self.lastDuration)
-        let timestamp = max(0.0, self.lastTimestamp)
+        guard self.lastDuration >= Self.minimumPlayableDuration else {
+            return
+        }
+        let duration = self.lastDuration
+        let timestamp = min(max(0.0, self.lastTimestamp), duration)
         let soundEnabled = !self.isMuted
         let statusChanged = self.lastPublishedPlaybackStatus != self.currentPlaybackStatus
         let durationChanged = abs(duration - self.lastPublishedDuration) >= 0.05
@@ -369,7 +381,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return Number.isFinite(value) ? value : 0;
           }
           function finiteDuration(value) {
-            return Number.isFinite(value) && value > 0 ? value : 0;
+            return Number.isFinite(value) && value >= 1 ? value : 0;
           }
           function installIsolationStyles() {
             if (document.getElementById('__multigramVideoIsolationStyle')) { return; }

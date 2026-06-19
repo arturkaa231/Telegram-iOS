@@ -11,6 +11,8 @@ import UniversalMediaPlayer
 import AvatarNode
 
 final class MediaBrowserPlayerNode: ASDisplayNode {
+    private static let minimumDisplayDuration: Double = 1.0
+
     private let context: AccountContext
     private var presentationData: PresentationData
 
@@ -801,16 +803,17 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.expandStatusDisposable.set((status |> deliverOnMainQueue).startStrict(next: { [weak self] s in
             guard let self = self else { return }
             self.expandStatusValue = s
-            let elapsed = max(0.0, s.timestamp)
             let total = max(0.0, s.duration)
+            let hasDisplayDuration = total >= Self.minimumDisplayDuration
+            let elapsed = hasDisplayDuration ? min(max(0.0, s.timestamp), total) : max(0.0, s.timestamp)
             self.expandElapsedLabel.text = Self.elapsedRemainingString(elapsed: elapsed, duration: total)
             self.expandRemainingLabel.text = ""
             self.updateBlock3Time(s)
             self.updateBlock2Progress(s)
             self.applyPendingInitialSeekIfPossible(bestEffort: false)
             let progress: CGFloat
-            if s.duration > 0.0 {
-                progress = CGFloat(max(0.0, min(1.0, s.timestamp / s.duration)))
+            if hasDisplayDuration {
+                progress = CGFloat(max(0.0, min(1.0, elapsed / total)))
             } else {
                 progress = 0.0
             }
@@ -821,7 +824,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             case .paused, .buffering:
                 isPlaying = false
             }
-            self.reportPlaybackPositionIfNeeded(timestamp: s.timestamp, progress: progress, isPlaying: isPlaying, duration: s.duration)
+            self.reportPlaybackPositionIfNeeded(timestamp: elapsed, progress: progress, isPlaying: isPlaying, duration: total)
         }))
     }
 
@@ -850,7 +853,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private static func elapsedRemainingString(elapsed: Double, duration: Double) -> String {
-        guard duration > 0.0 else {
+        guard duration >= Self.minimumDisplayDuration else {
             return Self.formatTime(elapsed)
         }
         let remaining = max(0.0, duration - elapsed)
@@ -858,15 +861,18 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private func updateBlock2Progress(_ status: MediaPlayerStatus) {
-        guard status.duration > 0, self.containerNode.frame.width > 0 else { return }
+        guard status.duration >= Self.minimumDisplayDuration, self.containerNode.frame.width > 0 else {
+            self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: 0.0, height: 2.0)
+            return
+        }
         let progress = max(0.0, min(1.0, status.timestamp / status.duration))
         let trackWidth = self.containerNode.frame.width
         self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: trackWidth * progress, height: 2.0)
     }
 
     private func updateBlock3Time(_ status: MediaPlayerStatus) {
-        let elapsed = max(0.0, status.timestamp)
         let total = max(0.0, status.duration)
+        let elapsed = total >= Self.minimumDisplayDuration ? min(max(0.0, status.timestamp), total) : max(0.0, status.timestamp)
         self.block3TimeLabel.text = Self.elapsedRemainingString(elapsed: elapsed, duration: total)
     }
 
