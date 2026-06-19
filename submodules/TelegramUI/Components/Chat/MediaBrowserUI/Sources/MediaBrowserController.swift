@@ -267,7 +267,7 @@ private final class MediaBrowserFocusOverlay {
     private let window: MediaBrowserFocusOverlayWindow
     private let rootViewController: UIViewController
     private let rootNode: ASDisplayNode
-    private weak var playerNode: MediaBrowserPlayerNode?
+    private var playerNode: MediaBrowserPlayerNode?
 
     init(windowScene: UIWindowScene) {
         self.window = MediaBrowserFocusOverlayWindow(windowScene: windowScene)
@@ -315,11 +315,14 @@ private final class MediaBrowserFocusOverlay {
     func hide() {
         self.window.interactiveFrame = nil
         self.window.isHidden = true
+        self.playerNode?.removeFromSupernode()
         self.playerNode = nil
     }
 }
 
 final class MediaBrowserControllerNode: ASDisplayNode {
+    private static var detachedFocusOverlay: MediaBrowserFocusOverlay?
+
     private let context: AccountContext
     private var peerId: EnginePeer.Id
     private var presentationData: PresentationData
@@ -534,7 +537,15 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     }
 
     deinit {
-        self.updateFocusOverlay(enabled: false, transition: .immediate)
+        if self.isFocusMode, let focusOverlay = self.focusOverlay {
+            Self.detachedFocusOverlay = focusOverlay
+            self.playerNode.onToggleFocusMode = {
+                Self.detachedFocusOverlay?.hide()
+                Self.detachedFocusOverlay = nil
+            }
+        } else {
+            self.updateFocusOverlay(enabled: false, transition: .immediate)
+        }
         self.flushCurrentLocalProgress()
         self.stopActiveOnTVSessionForExit()
     }
@@ -577,10 +588,17 @@ final class MediaBrowserControllerNode: ASDisplayNode {
                 overlay = MediaBrowserFocusOverlay(windowScene: windowScene)
                 self.focusOverlay = overlay
             }
+            if let detachedOverlay = Self.detachedFocusOverlay, detachedOverlay !== overlay {
+                detachedOverlay.hide()
+            }
+            Self.detachedFocusOverlay = overlay
             self.playerNode.removeFromSupernode()
             overlay.show(playerNode: self.playerNode, transition: transition)
         } else {
             self.focusOverlay?.hide()
+            if Self.detachedFocusOverlay === self.focusOverlay {
+                Self.detachedFocusOverlay = nil
+            }
             if self.playerNode.supernode !== self.contentNode {
                 self.playerNode.removeFromSupernode()
                 self.contentNode.addSubnode(self.playerNode)
