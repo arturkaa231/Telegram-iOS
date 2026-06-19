@@ -11,15 +11,21 @@ import ShareController
 public final class MediaBrowserController: ViewController {
     private let context: AccountContext
     private var peerId: EnginePeer.Id
+    private let initialMessageId: EngineMessage.Id?
+    private let initialPosition: Double?
+    private let initialTab: MediaBrowserTab
 
     private var presentationData: PresentationData
     private var presentationDataDisposable: Disposable?
     public var dismissed: (() -> Void)?
     public var onJumpToMessageRequested: ((EngineMessage.Id) -> Void)?
 
-    public init(context: AccountContext, peerId: EnginePeer.Id) {
+    public init(context: AccountContext, peerId: EnginePeer.Id, initialMessageId: EngineMessage.Id? = nil, initialPosition: Double? = nil, initialTab: MediaBrowserTab = .allFiles) {
         self.context = context
         self.peerId = peerId
+        self.initialMessageId = initialMessageId
+        self.initialPosition = initialPosition
+        self.initialTab = initialTab
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
 
         super.init(navigationBarPresentationData: nil)
@@ -49,6 +55,9 @@ public final class MediaBrowserController: ViewController {
             context: self.context,
             peerId: self.peerId,
             presentationData: self.presentationData,
+            initialMessageId: self.initialMessageId,
+            initialPosition: self.initialPosition,
+            initialTab: self.initialTab,
             dismiss: { [weak self] in
                 self?.dismissed?()
                 self?.dismiss(animated: true)
@@ -327,6 +336,10 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var peerId: EnginePeer.Id
     private var presentationData: PresentationData
     private let dismiss: () -> Void
+    private let initialMessageId: EngineMessage.Id?
+    private let initialPosition: Double?
+    private let initialTab: MediaBrowserTab
+    private var didApplyInitialSelection: Bool = false
 
     private let dimNode: ASDisplayNode
     private let contentNode: ASDisplayNode
@@ -363,12 +376,15 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         case chatPicker
     }
 
-    init(context: AccountContext, peerId: EnginePeer.Id, presentationData: PresentationData, dismiss: @escaping () -> Void) {
+    init(context: AccountContext, peerId: EnginePeer.Id, presentationData: PresentationData, initialMessageId: EngineMessage.Id?, initialPosition: Double?, initialTab: MediaBrowserTab, dismiss: @escaping () -> Void) {
         self.context = context
         self.peerId = peerId
         self.presentationData = presentationData
         self.basePresentationData = presentationData
         self.dismiss = dismiss
+        self.initialMessageId = initialMessageId
+        self.initialPosition = initialPosition
+        self.initialTab = initialTab
         self.mode = .files
 
         self.dimNode = ASDisplayNode()
@@ -433,6 +449,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         super.init()
 
+        self.selectedTab = initialTab
+
         onBackHandlerPlaceholder = { [weak self] in
             self?.switchToChatPicker()
         }
@@ -476,7 +494,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self?.dismiss()
         }
         self.playerNode.onPresentGallery = { [weak self] item in
-            self?.onPresentGallery?(item)
+            guard let self = self else { return }
+            if self.isFocusMode {
+                self.applyFocusMode(false, transition: .immediate)
+            }
+            self.onPresentGallery?(item)
         }
         self.playerNode.onShareMessage = { [weak self] item in
             self?.onShareMessage?(item)
@@ -538,10 +560,27 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     deinit {
         if self.isFocusMode, let focusOverlay = self.focusOverlay {
+            let context = self.context
+            let peerId = self.peerId
+            let messageId = self.playerNode.displayedItem?.messageId ?? self.initialMessageId
+            let position = self.playerNode.currentPlaybackPosition()
+            let selectedTab = self.selectedTab
             Self.detachedFocusOverlay = focusOverlay
             self.playerNode.onToggleFocusMode = {
                 Self.detachedFocusOverlay?.hide()
                 Self.detachedFocusOverlay = nil
+                Self.presentRestoredMediaBrowser(
+                    context: context,
+                    peerId: peerId,
+                    messageId: messageId,
+                    position: position,
+                    selectedTab: selectedTab
+                )
+            }
+            self.playerNode.onPresentGallery = { item in
+                Self.detachedFocusOverlay?.hide()
+                Self.detachedFocusOverlay = nil
+                Self.presentGallery(context: context, item: item)
             }
         } else {
             self.updateFocusOverlay(enabled: false, transition: .immediate)
@@ -560,6 +599,29 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private func updateFocusOverlay(transition: ContainedViewLayoutTransition) {
         self.updateFocusOverlay(enabled: self.isFocusMode, transition: transition)
+    }
+
+    private static func presentRestoredMediaBrowser(context: AccountContext, peerId: EnginePeer.Id, messageId: EngineMessage.Id?, position: Double, selectedTab: MediaBrowserTab) {
+        let controller = MediaBrowserController(
+            context: context,
+            peerId: peerId,
+            initialMessageId: messageId,
+            initialPosition: position,
+            initialTab: selectedTab == .onTV ? .allFiles : selectedTab
+        )
+        controller.modalPresentationStyle = .overCurrentContext
+        context.sharedContext.applicationBindings.getWindowHost()?.present(controller, on: .root, blockInteraction: false, completion: {})
+    }
+
+    private static func presentGallery(context: AccountContext, item: MediaBrowserItem) {
+        let source: GalleryControllerItemSource = .standaloneMessage(item.message, nil)
+        let gallery = context.sharedContext.makeGalleryController(
+            context: context,
+            source: source,
+            streamSingleVideo: true,
+            isPreview: false
+        )
+        context.sharedContext.applicationBindings.getWindowHost()?.present(gallery, on: .root, blockInteraction: false, completion: {})
     }
 
     private func applyFocusMode(_ enabled: Bool, transition: ContainedViewLayoutTransition) {
@@ -901,11 +963,18 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self.listNode.updateItems(items)
             self.listNode.mergePlaybackProgress(self.playbackProgressStore.progressMap(for: items))
             self.listNode.setAvailableSenders(self.dataSource.uniqueSenders())
-            if let displayedItem = self.playerNode.displayedItem {
+            if !self.didApplyInitialSelection, let initialMessageId = self.initialMessageId, let initialIndex = items.firstIndex(where: { $0.messageId == initialMessageId }) {
+                self.didApplyInitialSelection = true
+                self.currentItemIndex = initialIndex
+                self.showItem(items[initialIndex], explicitPosition: self.initialPosition)
+            } else if let displayedItem = self.playerNode.displayedItem {
+                self.didApplyInitialSelection = true
                 self.currentItemIndex = items.firstIndex(where: { $0.messageId == displayedItem.messageId })
             } else if let currentItemIndex = self.currentItemIndex, currentItemIndex >= 0, currentItemIndex < items.count {
+                self.didApplyInitialSelection = true
                 self.showItem(items[currentItemIndex])
             } else if let first = items.first {
+                self.didApplyInitialSelection = true
                 self.currentItemIndex = 0
                 self.showItem(first)
             } else {
@@ -1034,7 +1103,12 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             )
         }
 
-        self.dataSource.loadInitialBatch()
+        self.tabBarNode.setSelectedTab(self.selectedTab)
+        if self.selectedTab == .allFiles || self.selectedTab == .onTV || self.selectedTab == .addCustomFilter {
+            self.dataSource.loadInitialBatch()
+        } else {
+            self.dataSource.switchFilter(self.selectedTab)
+        }
     }
 
     private func requestMoreMediaForOnTVHydration() {

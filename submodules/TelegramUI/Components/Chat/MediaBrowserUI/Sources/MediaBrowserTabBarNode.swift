@@ -65,6 +65,12 @@ final class MediaBrowserTabBarNode: ASDisplayNode {
         updateTabAppearance()
     }
 
+    func setSelectedTab(_ tab: MediaBrowserTab) {
+        self.selectedIndex = tab.rawValue
+        self.updateTabAppearance()
+        self.scrollSelectedTabIntoView(animated: false)
+    }
+
     @objc private func tabTapped(_ sender: UIButton) {
         self.selectedIndex = sender.tag
         updateTabAppearance()
