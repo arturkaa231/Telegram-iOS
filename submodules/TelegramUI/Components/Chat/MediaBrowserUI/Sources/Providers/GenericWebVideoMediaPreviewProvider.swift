@@ -114,27 +114,27 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     func play() {
-        self.evaluate(Self.videoCommand("video.play();"))
+        self.evaluate(Self.videoCommand(action: "play"))
     }
 
     func pause() {
-        self.evaluate(Self.videoCommand("video.pause();"))
+        self.evaluate(Self.videoCommand(action: "pause"))
     }
 
     func togglePlayPause() {
-        self.evaluate(Self.videoCommand("if (video.paused) { video.play(); } else { video.pause(); }"))
+        self.evaluate(Self.videoCommand(action: "toggle"))
     }
 
     func seek(to timestamp: Double) {
         guard timestamp.isFinite else {
             return
         }
-        self.evaluate(Self.videoCommand("video.currentTime = \(max(0.0, timestamp));"))
+        self.evaluate(Self.videoCommand(action: "seek", value: max(0.0, timestamp)))
     }
 
     func setSoundMuted(_ muted: Bool) {
         self.isMuted = muted
-        self.evaluate(Self.videoCommand("video.muted = \(muted ? "true" : "false");"))
+        self.evaluate(Self.videoCommand(action: "muted", value: muted))
         self.publishStatus(nil)
     }
 
@@ -225,6 +225,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.lastTimestamp = body["currentTime"] as? Double ?? self.lastTimestamp
             self.lastDuration = body["duration"] as? Double ?? self.lastDuration
             self.publishStatus(nil)
+        case "unavailable":
+            self.statusUpdated?(.error("Видео недоступно на этой странице"))
         default:
             break
         }
@@ -275,12 +277,29 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.webView.evaluateJavaScript(script, completionHandler: nil)
     }
 
-    private static func videoCommand(_ command: String) -> String {
+    private static func videoCommand(action: String, value: Any? = nil) -> String {
+        let valueString: String
+        if let value = value as? Bool {
+            valueString = value ? "true" : "false"
+        } else if let value = value as? Double {
+            valueString = "\(value)"
+        } else {
+            valueString = "null"
+        }
         return """
         (function() {
-          var video = document.querySelector('video');
-          if (!video) { return false; }
-          \(command)
+          var payload = { action: '\(action)', value: \(valueString) };
+          if (window.__multigramWebVideoControl) {
+            window.__multigramWebVideoControl(payload);
+          }
+          var frames = document.querySelectorAll('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            try {
+              if (frames[i].contentWindow) {
+                frames[i].contentWindow.postMessage({ __multigramWebVideoCommand: payload }, '*');
+              }
+            } catch (e) {}
+          }
           return true;
         })();
         """
@@ -299,6 +318,77 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function finite(value) {
             return Number.isFinite(value) ? value : 0;
           }
+          function findVideo() {
+            return document.querySelector('video');
+          }
+          function clickCandidate() {
+            var selectors = [
+              'button[aria-label*="Play" i]',
+              'button[title*="Play" i]',
+              '.vjs-big-play-button',
+              '.plyr__control--overlaid',
+              '.jw-icon-playback',
+              '.jwplayer',
+              '.mejs-overlay-button',
+              '[class*="play" i]',
+              '[id*="play" i]'
+            ];
+            for (var i = 0; i < selectors.length; i++) {
+              var node = null;
+              try {
+                node = document.querySelector(selectors[i]);
+              } catch (e) {}
+              if (node) {
+                try {
+                  node.click();
+                  return true;
+                } catch (e) {}
+              }
+            }
+            return false;
+          }
+          function control(payload) {
+            var video = findVideo();
+            var action = payload && payload.action;
+            if (!video) {
+              if (action === 'play' || action === 'toggle') {
+                if (clickCandidate()) {
+                  setTimeout(function() {
+                    var delayedVideo = findVideo();
+                    if (delayedVideo) {
+                      control(payload);
+                    }
+                  }, 250);
+                  return true;
+                }
+              }
+              if (window.top === window && document.querySelectorAll('iframe').length === 0) {
+                post({ type: 'unavailable' });
+              }
+              return false;
+            }
+            video.setAttribute('playsinline', 'true');
+            video.setAttribute('webkit-playsinline', 'true');
+            if (action === 'play') {
+              video.play();
+            } else if (action === 'pause') {
+              video.pause();
+            } else if (action === 'toggle') {
+              if (video.paused) {
+                video.play();
+              } else {
+                video.pause();
+              }
+            } else if (action === 'seek') {
+              var timestamp = Number(payload.value);
+              if (Number.isFinite(timestamp)) {
+                video.currentTime = Math.max(0, timestamp);
+              }
+            } else if (action === 'muted') {
+              video.muted = !!payload.value;
+            }
+            return true;
+          }
           function attach(video) {
             if (!video || video.__multigramAttached) { return; }
             video.__multigramAttached = true;
@@ -313,11 +403,18 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               post({ type: 'time', currentTime: finite(video.currentTime), duration: finite(video.duration) });
             }, 500);
           }
-          attach(document.querySelector('video'));
+          window.__multigramWebVideoControl = control;
+          window.addEventListener('message', function(event) {
+            var data = event.data;
+            if (data && data.__multigramWebVideoCommand) {
+              control(data.__multigramWebVideoCommand);
+            }
+          });
+          attach(findVideo());
           var root = document.documentElement || document.body;
           if (root) {
             var observer = new MutationObserver(function() {
-              attach(document.querySelector('video'));
+              attach(findVideo());
             });
             observer.observe(root, { childList: true, subtree: true });
           }
