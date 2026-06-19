@@ -630,15 +630,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func listTapped() {
         self.setExpanded(false, notify: true)
+        self.onCloseMediaBrowser?()
     }
 
     @objc private func galleryTapped() {
         guard let item = self.currentItem else { return }
         self.onPresentGallery?(item)
-    }
-
-    @objc private func listTapped() {
-        self.onCloseMediaBrowser?()
     }
 
     @objc private func shareTapped() {
