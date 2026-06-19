@@ -224,6 +224,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         case "ended":
             self.publishStatus(.paused)
             self.statusUpdated?(.ended)
+        case "video-found":
+            self.statusLabel.isHidden = true
+            self.openExternallyButton.isHidden = true
         case "time":
             let timestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
             let duration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
@@ -356,6 +359,63 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           }
           function finite(value) {
             return Number.isFinite(value) ? value : 0;
+          }
+          function installIsolationStyles() {
+            if (document.getElementById('__multigramVideoIsolationStyle')) { return; }
+            var style = document.createElement('style');
+            style.id = '__multigramVideoIsolationStyle';
+            style.textContent = [
+              'html, body { margin: 0 !important; padding: 0 !important; width: 100% !important; height: 100% !important; background: #000 !important; overflow: hidden !important; }',
+              'body.__multigram-video-isolated { background: #000 !important; overflow: hidden !important; }',
+              '#__multigramVideoBackdrop { position: fixed !important; left: 0 !important; top: 0 !important; right: 0 !important; bottom: 0 !important; width: 100vw !important; height: 100vh !important; background: #000 !important; z-index: 2147483646 !important; pointer-events: none !important; }',
+              '.__multigram-video-root { position: fixed !important; left: 0 !important; top: 0 !important; right: auto !important; bottom: auto !important; width: 100vw !important; height: 100vh !important; max-width: none !important; max-height: none !important; min-width: 0 !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; border: 0 !important; transform: none !important; opacity: 1 !important; visibility: visible !important; display: block !important; background: #000 !important; z-index: 2147483647 !important; object-fit: contain !important; }',
+              'video.__multigram-video-root, .__multigram-video-root video { width: 100% !important; height: 100% !important; object-fit: contain !important; background: #000 !important; }',
+              'iframe.__multigram-video-root { border: 0 !important; }'
+            ].join('\\n');
+            (document.head || document.documentElement).appendChild(style);
+          }
+          function ensureBackdrop() {
+            var body = document.body || document.documentElement;
+            if (!body) { return; }
+            try {
+              body.classList.add('__multigram-video-isolated');
+            } catch (e) {}
+            if (!document.getElementById('__multigramVideoBackdrop')) {
+              var backdrop = document.createElement('div');
+              backdrop.id = '__multigramVideoBackdrop';
+              body.appendChild(backdrop);
+            }
+          }
+          function isolateElement(node) {
+            if (!node || node.__multigramIsolated) { return; }
+            installIsolationStyles();
+            ensureBackdrop();
+            node.__multigramIsolated = true;
+            try {
+              node.classList.add('__multigram-video-root');
+              node.scrollIntoView({ block: 'center', inline: 'center' });
+            } catch (e) {}
+            post({ type: 'video-found' });
+          }
+          function isolateFrameForSource(source) {
+            if (!source) { return false; }
+            var frames = document.querySelectorAll('iframe');
+            for (var i = 0; i < frames.length; i++) {
+              try {
+                if (frames[i].contentWindow === source) {
+                  isolateElement(frames[i]);
+                  return true;
+                }
+              } catch (e) {}
+            }
+            return false;
+          }
+          function notifyParentVideoFound() {
+            try {
+              if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ __multigramWebVideoFound: true }, '*');
+              }
+            } catch (e) {}
           }
           function isVisible(node) {
             if (!node || !node.getBoundingClientRect) { return false; }
@@ -501,6 +561,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             video.__multigramAttached = true;
             video.setAttribute('playsinline', 'true');
             video.setAttribute('webkit-playsinline', 'true');
+            isolateElement(video);
+            notifyParentVideoFound();
             video.addEventListener('play', function() { post({ type: 'playing' }); });
             video.addEventListener('playing', function() { post({ type: 'playing' }); });
             video.addEventListener('pause', function() { post({ type: 'paused' }); });
@@ -513,6 +575,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           window.__multigramWebVideoControl = control;
           window.addEventListener('message', function(event) {
             var data = event.data;
+            if (data && data.__multigramWebVideoFound && window.top === window) {
+              isolateFrameForSource(event.source);
+            }
             if (data && data.__multigramWebVideoCommand) {
               control(data.__multigramWebVideoCommand);
             }
