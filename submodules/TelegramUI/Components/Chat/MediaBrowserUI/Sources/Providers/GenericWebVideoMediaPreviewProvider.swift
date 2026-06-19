@@ -41,6 +41,14 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private static let minimumPlayableDuration: Double = 1.0
     private static let minimumDurationDelta: Double = 0.05
 
+    private struct StreamCandidate {
+        let url: URL
+        let referer: URL?
+        let userAgent: String?
+        let cookie: String?
+        let isPrimaryVideoSource: Bool
+    }
+
     private let item: MediaBrowserItem
     private let context: AccountContext
     private var presentationData: PresentationData
@@ -56,6 +64,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private var streamTimeObserver: Any?
     private var streamDidPlayToEndObserver: NSObjectProtocol?
     private var activeStreamUrl: URL?
+    private var pendingStreamCandidate: StreamCandidate?
+    private var rejectedStreamUrls = Set<URL>()
     private var pendingStreamPlayback: Bool = false
     private var lastDuration: Double = 0.0
     private var lastTimestamp: Double = 0.0
@@ -153,6 +163,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
+        if let candidate = self.pendingStreamCandidate {
+            self.pendingStreamCandidate = nil
+            self.activateStream(candidate)
+            return
+        }
         self.evaluate(Self.videoCommand(action: "play"))
     }
 
@@ -176,6 +191,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
+        if let candidate = self.pendingStreamCandidate {
+            self.pendingStreamCandidate = nil
+            self.activateStream(candidate)
+            return
+        }
         self.evaluate(Self.videoCommand(action: "toggle"))
     }
 
@@ -322,13 +342,29 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         guard let url = Self.streamUrl(from: urlString, baseUrl: body["baseUrl"] as? String) else {
             return
         }
-        if self.activeStreamUrl == url {
+        if self.activeStreamUrl == url || self.rejectedStreamUrls.contains(url) {
             return
         }
         let referer = (body["referer"] as? String).flatMap { URL(string: $0) } ?? self.webView.url
         let userAgent = body["userAgent"] as? String
         let cookie = body["cookie"] as? String
-        self.activateStream(url: url, referer: referer, userAgent: userAgent, cookie: cookie)
+        let source = body["source"] as? String
+        let candidate = StreamCandidate(
+            url: url,
+            referer: referer,
+            userAgent: userAgent,
+            cookie: cookie,
+            isPrimaryVideoSource: source == "video-source"
+        )
+        if self.pendingStreamPlayback || candidate.isPrimaryVideoSource {
+            self.activateStream(candidate)
+        } else if self.pendingStreamCandidate == nil {
+            self.pendingStreamCandidate = candidate
+        }
+    }
+
+    private func activateStream(_ candidate: StreamCandidate) {
+        self.activateStream(url: candidate.url, referer: candidate.referer, userAgent: candidate.userAgent, cookie: candidate.cookie)
     }
 
     private func activateStream(url: URL, referer: URL?, userAgent: String?, cookie: String?) {
@@ -428,17 +464,35 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
                 self.streamPlayer?.play()
             }
         case .failed:
-            self.statusLabel.text = "Не удалось открыть поток"
-            self.statusLabel.isHidden = false
-            self.openExternallyButton.isHidden = false
-            self.statusUpdated?(.error("Не удалось открыть поток"))
-            self.publishStreamStatus(playbackStatus: .paused)
+            self.fallbackFromFailedStream(message: "Не удалось открыть поток")
         @unknown default:
-            self.statusLabel.text = "Поток не поддерживается"
+            self.fallbackFromFailedStream(message: "Поток не поддерживается")
+        }
+    }
+
+    private func fallbackFromFailedStream(message: String) {
+        if let activeStreamUrl = self.activeStreamUrl {
+            self.rejectedStreamUrls.insert(activeStreamUrl)
+        }
+        let shouldRetryWebPlayback = self.pendingStreamPlayback
+        self.releaseStreamPlayer()
+        self.publishStatus(.paused)
+        if shouldRetryWebPlayback {
+            self.statusLabel.text = "Загрузка видео"
+            self.statusLabel.isHidden = false
+            self.openExternallyButton.isHidden = true
+            self.statusUpdated?(.loading)
+            Queue.mainQueue().after(0.1) { [weak self] in
+                guard let self = self, self.pendingStreamPlayback else {
+                    return
+                }
+                self.evaluate(Self.videoCommand(action: "play"))
+            }
+        } else {
+            self.statusLabel.text = message
             self.statusLabel.isHidden = false
             self.openExternallyButton.isHidden = false
-            self.statusUpdated?(.error("Поток не поддерживается"))
-            self.publishStreamStatus(playbackStatus: .paused)
+            self.statusUpdated?(.error(message))
         }
     }
 
@@ -653,22 +707,23 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             if (!/^https?:\\/\\//i.test(url)) { return false; }
             return /\\.(m3u8|mp4|m4v|mov|webm)([?#]|$)/i.test(url);
           }
-          function streamPayload(url) {
+          function streamPayload(url, source) {
             return {
               type: 'stream-found',
               url: absoluteUrl(url),
+              source: source || 'unknown',
               baseUrl: window.location.href,
               referer: document.referrer || window.location.href,
               userAgent: navigator.userAgent || '',
               cookie: document.cookie || ''
             };
           }
-          function reportStreamUrl(url) {
+          function reportStreamUrl(url, source) {
             if (!isStreamUrl(url)) { return false; }
-            post(streamPayload(url));
+            post(streamPayload(url, source));
             try {
               if (window.parent && window.parent !== window) {
-                window.parent.postMessage({ __multigramWebVideoStreamFound: streamPayload(url) }, '*');
+                window.parent.postMessage({ __multigramWebVideoStreamFound: streamPayload(url, source) }, '*');
               }
             } catch (e) {}
             return true;
@@ -676,12 +731,12 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function reportVideoSources(video) {
             if (!video) { return false; }
             var didReport = false;
-            if (video.currentSrc) { didReport = reportStreamUrl(video.currentSrc) || didReport; }
-            if (video.src) { didReport = reportStreamUrl(video.src) || didReport; }
+            if (video.currentSrc) { didReport = reportStreamUrl(video.currentSrc, 'video-source') || didReport; }
+            if (video.src) { didReport = reportStreamUrl(video.src, 'video-source') || didReport; }
             try {
               var sources = video.querySelectorAll('source[src]');
               for (var i = 0; i < sources.length; i++) {
-                didReport = reportStreamUrl(sources[i].src || sources[i].getAttribute('src')) || didReport;
+                didReport = reportStreamUrl(sources[i].src || sources[i].getAttribute('src'), 'video-source') || didReport;
               }
             } catch (e) {}
             return didReport;
@@ -690,7 +745,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             try {
               var entries = performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
               for (var i = 0; i < entries.length; i++) {
-                reportStreamUrl(entries[i].name);
+                reportStreamUrl(entries[i].name, 'resource');
               }
             } catch (e) {}
           }
@@ -703,10 +758,10 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
                 window.fetch = function(input, init) {
                   try {
                     var url = typeof input === 'string' ? input : (input && input.url);
-                    reportStreamUrl(url);
+                    reportStreamUrl(url, 'fetch');
                   } catch (e) {}
                   return originalFetch.apply(this, arguments).then(function(response) {
-                    try { reportStreamUrl(response && response.url); } catch (e) {}
+                    try { reportStreamUrl(response && response.url, 'fetch-response'); } catch (e) {}
                     return response;
                   });
                 };
@@ -715,9 +770,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             try {
               var originalOpen = XMLHttpRequest.prototype.open;
               XMLHttpRequest.prototype.open = function(method, url) {
-                try { reportStreamUrl(url); } catch (e) {}
+                try { reportStreamUrl(url, 'xhr'); } catch (e) {}
                 this.addEventListener('load', function() {
-                  try { reportStreamUrl(this.responseURL); } catch (e) {}
+                  try { reportStreamUrl(this.responseURL, 'xhr-response'); } catch (e) {}
                 });
                 return originalOpen.apply(this, arguments);
               };
