@@ -353,6 +353,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var autoOpenedRemoteOnTVSessionId: String?
     private var lastProgressRecordsReloadAt: Double = 0.0
     private var progressRecordsReloadScheduled: Bool = false
+    private var focusModeToggleLocked: Bool = false
 
     enum Mode {
         case files
@@ -466,11 +467,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
         self.playerNode.onToggleFocusMode = { [weak self] in
             guard let self = self else { return }
-            self.isFocusMode.toggle()
-            self.updateFocusOverlay(transition: .animated(duration: 0.3, curve: .easeInOut))
-            if let layout = self.validLayout {
-                self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.3, curve: .easeInOut))
-            }
+            self.requestFocusMode(!self.isFocusMode)
         }
         self.playerNode.onCloseMediaBrowser = { [weak self] in
             self?.dismiss()
@@ -522,6 +519,20 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         }
     }
 
+    private func requestFocusMode(_ enabled: Bool) {
+        guard !self.focusModeToggleLocked else {
+            return
+        }
+        self.focusModeToggleLocked = true
+        Queue.mainQueue().after(0.02) { [weak self] in
+            guard let self = self else { return }
+            self.applyFocusMode(enabled, transition: .animated(duration: 0.3, curve: .easeInOut))
+            Queue.mainQueue().after(0.35) { [weak self] in
+                self?.focusModeToggleLocked = false
+            }
+        }
+    }
+
     deinit {
         self.updateFocusOverlay(enabled: false, transition: .immediate)
         self.flushCurrentLocalProgress()
@@ -540,12 +551,24 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.updateFocusOverlay(enabled: self.isFocusMode, transition: transition)
     }
 
-    private func updateFocusOverlay(enabled: Bool, transition: ContainedViewLayoutTransition) {
+    private func applyFocusMode(_ enabled: Bool, transition: ContainedViewLayoutTransition) {
+        self.isFocusMode = enabled
+        if !self.updateFocusOverlay(enabled: enabled, transition: transition) {
+            self.isFocusMode = false
+            let _ = self.updateFocusOverlay(enabled: false, transition: .immediate)
+        }
+        if let layout = self.validLayout {
+            self.containerLayoutUpdated(layout: layout, transition: transition)
+        }
+    }
+
+    @discardableResult
+    private func updateFocusOverlay(enabled: Bool, transition: ContainedViewLayoutTransition) -> Bool {
         self.playerNode.setFocusMode(enabled)
 
         if enabled {
             guard let windowScene = self.currentWindowScene() else {
-                return
+                return false
             }
             let overlay: MediaBrowserFocusOverlay
             if let current = self.focusOverlay {
@@ -564,6 +587,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             }
             self.focusOverlay = nil
         }
+        return true
     }
 
     private static let defaultDevelopmentOnTVSyncEndpoint = "http://192.168.1.76:4010"
