@@ -42,6 +42,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private var lastPublishedPlaybackStatus: MediaPlayerPlaybackStatus?
     private var lastPublishedSoundEnabled: Bool?
     private var isMuted: Bool = false
+    private var hasPlayableVideo: Bool = false
 
     var statusUpdated: ((MediaPreviewPlaybackStatus) -> Void)?
     var aspectRatioUpdated: ((CGFloat) -> Void)?
@@ -225,11 +226,15 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.publishStatus(.paused)
             self.statusUpdated?(.ended)
         case "video-found":
+            self.hasPlayableVideo = true
             self.statusLabel.isHidden = true
             self.openExternallyButton.isHidden = true
         case "time":
             let timestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
             let duration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
+            if duration <= 0.0 && self.lastDuration <= 0.0 {
+                return
+            }
             let timestampChanged = abs(timestamp - self.lastTimestamp) >= 0.05
             let durationChanged = abs(duration - self.lastDuration) >= 0.05
             guard timestampChanged || durationChanged || duration > 0.0 else {
@@ -248,6 +253,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private func publishStatus(_ explicitStatus: MediaPlayerPlaybackStatus?) {
         if let explicitStatus = explicitStatus {
             self.currentPlaybackStatus = explicitStatus
+        }
+        if !self.hasPlayableVideo && self.lastDuration <= 0.0 {
+            return
         }
         let duration = max(0.0, self.lastDuration)
         let timestamp = max(0.0, self.lastTimestamp)
@@ -360,6 +368,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function finite(value) {
             return Number.isFinite(value) ? value : 0;
           }
+          function finiteDuration(value) {
+            return Number.isFinite(value) && value > 0 ? value : 0;
+          }
           function installIsolationStyles() {
             if (document.getElementById('__multigramVideoIsolationStyle')) { return; }
             var style = document.createElement('style');
@@ -426,14 +437,60 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             var rect = node.getBoundingClientRect();
             return rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
           }
+          function hasVideoSource(video) {
+            if (!video) { return false; }
+            if (video.currentSrc || video.src) { return true; }
+            try {
+              return !!video.querySelector('source[src]');
+            } catch (e) {
+              return false;
+            }
+          }
+          function isPlayableVideo(video) {
+            if (!video) { return false; }
+            if (!hasVideoSource(video)) { return false; }
+            if (video.readyState >= 1) { return true; }
+            if (Number.isFinite(video.duration) && video.duration > 0) { return true; }
+            return false;
+          }
+          function videoScore(video) {
+            if (!video || !hasVideoSource(video)) { return -1; }
+            var score = 0;
+            if (isVisible(video)) {
+              var rect = video.getBoundingClientRect();
+              score += Math.min(100000, rect.width * rect.height);
+            }
+            if (video.readyState >= 1) { score += 100000; }
+            if (Number.isFinite(video.duration) && video.duration > 0) { score += 100000; }
+            if (!video.paused) { score += 100000; }
+            return score;
+          }
           function findVideo() {
             var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+            var best = null;
+            var bestScore = -1;
             for (var i = 0; i < videos.length; i++) {
-              if (isVisible(videos[i])) {
-                return videos[i];
+              var score = videoScore(videos[i]);
+              if (score > bestScore) {
+                bestScore = score;
+                best = videos[i];
               }
             }
-            return videos[0] || null;
+            return bestScore >= 0 ? best : null;
+          }
+          function activate(video) {
+            if (!isPlayableVideo(video)) { return false; }
+            if (!isVisible(video)) { return false; }
+            isolateElement(video);
+            notifyParentVideoFound();
+            post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
+            return true;
+          }
+          function attachKnownVideos() {
+            var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+            for (var i = 0; i < videos.length; i++) {
+              attach(videos[i]);
+            }
           }
           function dispatchClick(node) {
             if (!node) { return false; }
@@ -530,6 +587,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             }
             video.setAttribute('playsinline', 'true');
             video.setAttribute('webkit-playsinline', 'true');
+            activate(video);
             if (action === 'play') {
               var playPromise = video.play();
               if (playPromise && typeof playPromise.catch === 'function') {
@@ -561,15 +619,22 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             video.__multigramAttached = true;
             video.setAttribute('playsinline', 'true');
             video.setAttribute('webkit-playsinline', 'true');
-            isolateElement(video);
-            notifyParentVideoFound();
-            video.addEventListener('play', function() { post({ type: 'playing' }); });
-            video.addEventListener('playing', function() { post({ type: 'playing' }); });
+            activate(video);
+            video.addEventListener('loadedmetadata', function() { activate(video); });
+            video.addEventListener('loadeddata', function() { activate(video); });
+            video.addEventListener('canplay', function() { activate(video); });
+            video.addEventListener('play', function() { activate(video); post({ type: 'playing' }); });
+            video.addEventListener('playing', function() { activate(video); post({ type: 'playing' }); });
             video.addEventListener('pause', function() { post({ type: 'paused' }); });
             video.addEventListener('waiting', function() { post({ type: 'waiting' }); });
             video.addEventListener('ended', function() { post({ type: 'ended' }); });
+            video.addEventListener('timeupdate', function() {
+              post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
+            });
             setInterval(function() {
-              post({ type: 'time', currentTime: finite(video.currentTime), duration: finite(video.duration) });
+              if (isPlayableVideo(video)) {
+                post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
+              }
             }, 500);
           }
           window.__multigramWebVideoControl = control;
@@ -587,13 +652,13 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               attach(findVideo());
             }, 120);
           }, true);
-          attach(findVideo());
+          attachKnownVideos();
           var root = document.documentElement || document.body;
           if (root) {
             var observer = new MutationObserver(function() {
-              attach(findVideo());
+              attachKnownVideos();
             });
-            observer.observe(root, { childList: true, subtree: true });
+            observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'style', 'class'] });
           }
         })();
         """
