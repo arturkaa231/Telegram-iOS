@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import WebKit
+import AVFoundation
 import Display
 import AsyncDisplayKit
 import SwiftSignalKit
@@ -26,6 +27,16 @@ public final class GenericWebVideoMediaPreviewProvider: MediaPreviewProvider {
     }
 }
 
+private final class GenericWebVideoPlayerView: UIView {
+    override class var layerClass: AnyClass {
+        return AVPlayerLayer.self
+    }
+
+    var playerLayer: AVPlayerLayer {
+        return self.layer as! AVPlayerLayer
+    }
+}
+
 final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScriptMessageHandler, WKNavigationDelegate {
     private static let minimumPlayableDuration: Double = 1.0
     private static let minimumDurationDelta: Double = 0.05
@@ -34,9 +45,18 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private let context: AccountContext
     private var presentationData: PresentationData
     private let webView: WKWebView
+    private let playerView: GenericWebVideoPlayerView
     private let statusLabel: UILabel
     private let openExternallyButton: UIButton
     private let statusPromise = Promise<MediaPlayerStatus>(MediaPlayerStatus(generationTimestamp: 0.0, duration: 0.0, dimensions: .zero, timestamp: 0.0, baseRate: 1.0, seekId: 0, status: .paused, soundEnabled: true))
+    private var streamPlayer: AVPlayer?
+    private var streamPlayerItem: AVPlayerItem?
+    private var streamStatusObservation: NSKeyValueObservation?
+    private var streamTimeControlObservation: NSKeyValueObservation?
+    private var streamTimeObserver: Any?
+    private var streamDidPlayToEndObserver: NSObjectProtocol?
+    private var activeStreamUrl: URL?
+    private var pendingStreamPlayback: Bool = false
     private var lastDuration: Double = 0.0
     private var lastTimestamp: Double = 0.0
     private var currentPlaybackStatus: MediaPlayerPlaybackStatus = .paused
@@ -82,6 +102,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         }
         configuration.userContentController.addUserScript(WKUserScript(source: Self.bridgeScript(), injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         self.webView = WKWebView(frame: .zero, configuration: configuration)
+        self.playerView = GenericWebVideoPlayerView()
         self.statusLabel = UILabel()
         self.statusLabel.font = UIFont.systemFont(ofSize: 14.0, weight: .regular)
         self.statusLabel.textAlignment = .center
@@ -110,6 +131,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.webView.isOpaque = false
         self.webView.backgroundColor = .black
         self.view.addSubview(self.webView)
+        self.playerView.isHidden = true
+        self.playerView.playerLayer.videoGravity = .resizeAspect
+        self.view.addSubview(self.playerView)
         self.view.addSubview(self.statusLabel)
         self.view.addSubview(self.openExternallyButton)
         self.openExternallyButton.addTarget(self, action: #selector(self.openExternallyPressed), for: .touchUpInside)
@@ -117,19 +141,41 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     deinit {
+        self.releaseStreamPlayer()
         self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "multigramWebVideo")
         self.webView.stopLoading()
     }
 
     func play() {
+        if let streamPlayer = self.streamPlayer {
+            streamPlayer.play()
+            self.statusUpdated?(.loading)
+            return
+        }
+        self.pendingStreamPlayback = true
         self.evaluate(Self.videoCommand(action: "play"))
     }
 
     func pause() {
+        if let streamPlayer = self.streamPlayer {
+            self.pendingStreamPlayback = false
+            streamPlayer.pause()
+            return
+        }
+        self.pendingStreamPlayback = false
         self.evaluate(Self.videoCommand(action: "pause"))
     }
 
     func togglePlayPause() {
+        if let streamPlayer = self.streamPlayer {
+            if streamPlayer.rate.isZero {
+                self.play()
+            } else {
+                self.pause()
+            }
+            return
+        }
+        self.pendingStreamPlayback = true
         self.evaluate(Self.videoCommand(action: "toggle"))
     }
 
@@ -137,13 +183,19 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         guard timestamp.isFinite else {
             return
         }
+        if let streamPlayer = self.streamPlayer {
+            streamPlayer.seek(to: CMTime(seconds: max(0.0, timestamp), preferredTimescale: 600))
+            return
+        }
         self.evaluate(Self.videoCommand(action: "seek", value: max(0.0, timestamp)))
     }
 
     func setSoundMuted(_ muted: Bool) {
         self.isMuted = muted
+        self.streamPlayer?.isMuted = muted
         self.evaluate(Self.videoCommand(action: "muted", value: muted))
         self.publishStatus(nil)
+        self.publishStreamStatus(playbackStatus: nil)
     }
 
     func updatePresentationData(_ presentationData: PresentationData) {
@@ -153,6 +205,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
 
     func updateLayout(size: CGSize, transition: ContainedViewLayoutTransition) {
         self.webView.frame = CGRect(origin: .zero, size: size)
+        self.playerView.frame = CGRect(origin: .zero, size: size)
         let labelHeight: CGFloat = 44.0
         let buttonSize = self.openExternallyButton.sizeThatFits(CGSize(width: max(0.0, size.width - 32.0), height: 32.0))
         let buttonHeight: CGFloat = 32.0
@@ -168,6 +221,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     func detach() {
+        self.releaseStreamPlayer()
         self.pause()
         self.webView.stopLoading()
     }
@@ -232,6 +286,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.hasPlayableVideo = true
             self.statusLabel.isHidden = true
             self.openExternallyButton.isHidden = true
+        case "stream-found":
+            self.handleStreamFound(body)
         case "time":
             let rawTimestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
             let rawDuration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
@@ -256,6 +312,178 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.statusUpdated?(.error("Видео недоступно на этой странице"))
         default:
             break
+        }
+    }
+
+    private func handleStreamFound(_ body: [String: Any]) {
+        guard let urlString = body["url"] as? String else {
+            return
+        }
+        guard let url = Self.streamUrl(from: urlString, baseUrl: body["baseUrl"] as? String) else {
+            return
+        }
+        if self.activeStreamUrl == url {
+            return
+        }
+        let referer = (body["referer"] as? String).flatMap { URL(string: $0) } ?? self.webView.url
+        let userAgent = body["userAgent"] as? String
+        let cookie = body["cookie"] as? String
+        self.activateStream(url: url, referer: referer, userAgent: userAgent, cookie: cookie)
+    }
+
+    private func activateStream(url: URL, referer: URL?, userAgent: String?, cookie: String?) {
+        self.releaseStreamPlayer()
+        self.activeStreamUrl = url
+        self.statusUpdated?(.loading)
+        self.statusLabel.text = "Загрузка потока"
+        self.statusLabel.isHidden = false
+        self.openExternallyButton.isHidden = true
+
+        var headers: [String: String] = [:]
+        if let referer = referer {
+            headers["Referer"] = referer.absoluteString
+        }
+        if let userAgent = userAgent, !userAgent.isEmpty {
+            headers["User-Agent"] = userAgent
+        }
+        if let cookie = cookie, !cookie.isEmpty {
+            headers["Cookie"] = cookie
+        }
+
+        let asset: AVURLAsset
+        if headers.isEmpty {
+            asset = AVURLAsset(url: url)
+        } else {
+            asset = AVURLAsset(url: url, options: ["AVURLAssetHTTPHeaderFieldsKey": headers])
+        }
+        let item = AVPlayerItem(asset: asset)
+        let player = AVPlayer(playerItem: item)
+        player.isMuted = self.isMuted
+
+        self.streamPlayerItem = item
+        self.streamPlayer = player
+        self.playerView.playerLayer.player = player
+        self.playerView.isHidden = false
+        self.webView.isHidden = true
+        self.hasPlayableVideo = true
+
+        self.streamStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self] item, _ in
+            Queue.mainQueue().async {
+                self?.handleStreamItemStatus(item.status)
+            }
+        }
+        self.streamTimeControlObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+            Queue.mainQueue().async {
+                self?.publishStreamStatus(playbackStatus: self?.playbackStatus(for: player.timeControlStatus))
+            }
+        }
+        self.streamTimeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 0.35, preferredTimescale: 600), queue: .main) { [weak self] _ in
+            self?.publishStreamStatus(playbackStatus: nil)
+        }
+        self.streamDidPlayToEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            guard let self = self else {
+                return
+            }
+            self.pendingStreamPlayback = false
+            self.publishStreamStatus(playbackStatus: .paused)
+            self.statusUpdated?(.ended)
+        }
+
+        if self.pendingStreamPlayback {
+            player.play()
+        }
+    }
+
+    private func releaseStreamPlayer() {
+        if let timeObserver = self.streamTimeObserver, let player = self.streamPlayer {
+            player.removeTimeObserver(timeObserver)
+        }
+        if let observer = self.streamDidPlayToEndObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        self.streamTimeObserver = nil
+        self.streamDidPlayToEndObserver = nil
+        self.streamStatusObservation = nil
+        self.streamTimeControlObservation = nil
+        self.streamPlayer?.pause()
+        self.streamPlayer = nil
+        self.streamPlayerItem = nil
+        self.playerView.playerLayer.player = nil
+        self.playerView.isHidden = true
+        self.webView.isHidden = false
+        self.activeStreamUrl = nil
+    }
+
+    private func handleStreamItemStatus(_ status: AVPlayerItem.Status) {
+        switch status {
+        case .unknown:
+            self.statusLabel.text = "Загрузка потока"
+            self.statusLabel.isHidden = false
+            self.statusUpdated?(.loading)
+        case .readyToPlay:
+            self.statusLabel.isHidden = true
+            self.openExternallyButton.isHidden = true
+            self.publishStreamStatus(playbackStatus: self.streamPlayer.map { self.playbackStatus(for: $0.timeControlStatus) })
+            if self.pendingStreamPlayback {
+                self.streamPlayer?.play()
+            }
+        case .failed:
+            self.statusLabel.text = "Не удалось открыть поток"
+            self.statusLabel.isHidden = false
+            self.openExternallyButton.isHidden = false
+            self.statusUpdated?(.error("Не удалось открыть поток"))
+            self.publishStreamStatus(playbackStatus: .paused)
+        @unknown default:
+            self.statusLabel.text = "Поток не поддерживается"
+            self.statusLabel.isHidden = false
+            self.openExternallyButton.isHidden = false
+            self.statusUpdated?(.error("Поток не поддерживается"))
+            self.publishStreamStatus(playbackStatus: .paused)
+        }
+    }
+
+    private func playbackStatus(for timeControlStatus: AVPlayer.TimeControlStatus) -> MediaPlayerPlaybackStatus {
+        switch timeControlStatus {
+        case .playing:
+            return .playing
+        case .waitingToPlayAtSpecifiedRate:
+            return .buffering(initial: false, whilePlaying: true, progress: 0.0, display: true)
+        case .paused:
+            return .paused
+        @unknown default:
+            return .paused
+        }
+    }
+
+    private func publishStreamStatus(playbackStatus explicitStatus: MediaPlayerPlaybackStatus?) {
+        guard let player = self.streamPlayer, let item = self.streamPlayerItem else {
+            return
+        }
+        let duration = Self.seconds(item.duration)
+        let timestamp = min(max(0.0, Self.seconds(player.currentTime())), duration > 0.0 ? duration : Double.greatestFiniteMagnitude)
+        let status = explicitStatus ?? self.playbackStatus(for: player.timeControlStatus)
+        self.currentPlaybackStatus = status
+        self.lastDuration = duration
+        self.lastTimestamp = timestamp
+        self.statusPromise.set(.single(MediaPlayerStatus(
+            generationTimestamp: CACurrentMediaTime(),
+            duration: duration,
+            dimensions: CGSize(width: 16.0, height: 9.0),
+            timestamp: timestamp,
+            baseRate: 1.0,
+            seekId: 0,
+            status: status,
+            soundEnabled: !self.isMuted
+        )))
+
+        switch status {
+        case .playing:
+            self.pendingStreamPlayback = false
+            self.statusUpdated?(.playing)
+        case .paused:
+            self.statusUpdated?(.paused)
+        case .buffering:
+            self.statusUpdated?(.loading)
         }
     }
 
@@ -367,6 +595,34 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         return max(0.0, result)
     }
 
+    private static func seconds(_ time: CMTime) -> Double {
+        let seconds = CMTimeGetSeconds(time)
+        if seconds.isFinite && !seconds.isNaN {
+            return max(0.0, seconds)
+        }
+        return 0.0
+    }
+
+    private static func streamUrl(from urlString: String, baseUrl: String?) -> URL? {
+        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+        let base = baseUrl.flatMap(URL.init(string:))
+        guard let url = URL(string: trimmed, relativeTo: base)?.absoluteURL else {
+            return nil
+        }
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return nil
+        }
+        let lower = url.absoluteString.lowercased()
+        let supportedMarkers = [".m3u8", ".mp4", ".m4v", ".mov", ".webm"]
+        guard supportedMarkers.contains(where: { lower.contains($0) }) else {
+            return nil
+        }
+        return url
+    }
+
     private static func bridgeScript() -> String {
         return """
         (function() {
@@ -382,6 +638,90 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           }
           function finiteDuration(value) {
             return Number.isFinite(value) && value >= 1 ? value : 0;
+          }
+          function absoluteUrl(value) {
+            if (!value || typeof value !== 'string') { return null; }
+            try {
+              return new URL(value, document.baseURI || window.location.href).href;
+            } catch (e) {
+              return null;
+            }
+          }
+          function isStreamUrl(value) {
+            var url = absoluteUrl(value);
+            if (!url) { return false; }
+            if (!/^https?:\\/\\//i.test(url)) { return false; }
+            return /\\.(m3u8|mp4|m4v|mov|webm)([?#]|$)/i.test(url);
+          }
+          function streamPayload(url) {
+            return {
+              type: 'stream-found',
+              url: absoluteUrl(url),
+              baseUrl: window.location.href,
+              referer: document.referrer || window.location.href,
+              userAgent: navigator.userAgent || '',
+              cookie: document.cookie || ''
+            };
+          }
+          function reportStreamUrl(url) {
+            if (!isStreamUrl(url)) { return false; }
+            post(streamPayload(url));
+            try {
+              if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ __multigramWebVideoStreamFound: streamPayload(url) }, '*');
+              }
+            } catch (e) {}
+            return true;
+          }
+          function reportVideoSources(video) {
+            if (!video) { return false; }
+            var didReport = false;
+            if (video.currentSrc) { didReport = reportStreamUrl(video.currentSrc) || didReport; }
+            if (video.src) { didReport = reportStreamUrl(video.src) || didReport; }
+            try {
+              var sources = video.querySelectorAll('source[src]');
+              for (var i = 0; i < sources.length; i++) {
+                didReport = reportStreamUrl(sources[i].src || sources[i].getAttribute('src')) || didReport;
+              }
+            } catch (e) {}
+            return didReport;
+          }
+          function scanResourceStreams() {
+            try {
+              var entries = performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
+              for (var i = 0; i < entries.length; i++) {
+                reportStreamUrl(entries[i].name);
+              }
+            } catch (e) {}
+          }
+          function installNetworkStreamHooks() {
+            if (window.__multigramWebVideoNetworkHooksInstalled) { return; }
+            window.__multigramWebVideoNetworkHooksInstalled = true;
+            try {
+              var originalFetch = window.fetch;
+              if (originalFetch) {
+                window.fetch = function(input, init) {
+                  try {
+                    var url = typeof input === 'string' ? input : (input && input.url);
+                    reportStreamUrl(url);
+                  } catch (e) {}
+                  return originalFetch.apply(this, arguments).then(function(response) {
+                    try { reportStreamUrl(response && response.url); } catch (e) {}
+                    return response;
+                  });
+                };
+              }
+            } catch (e) {}
+            try {
+              var originalOpen = XMLHttpRequest.prototype.open;
+              XMLHttpRequest.prototype.open = function(method, url) {
+                try { reportStreamUrl(url); } catch (e) {}
+                this.addEventListener('load', function() {
+                  try { reportStreamUrl(this.responseURL); } catch (e) {}
+                });
+                return originalOpen.apply(this, arguments);
+              };
+            } catch (e) {}
           }
           function installIsolationStyles() {
             if (document.getElementById('__multigramVideoIsolationStyle')) { return; }
@@ -492,6 +832,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           }
           function activate(video) {
             if (!isPlayableVideo(video)) { return false; }
+            reportVideoSources(video);
             if (!isVisible(video)) { return false; }
             isolateElement(video);
             notifyParentVideoFound();
@@ -631,10 +972,13 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             video.__multigramAttached = true;
             video.setAttribute('playsinline', 'true');
             video.setAttribute('webkit-playsinline', 'true');
+            reportVideoSources(video);
             activate(video);
             video.addEventListener('loadedmetadata', function() { activate(video); });
             video.addEventListener('loadeddata', function() { activate(video); });
             video.addEventListener('canplay', function() { activate(video); });
+            video.addEventListener('durationchange', function() { reportVideoSources(video); });
+            video.addEventListener('emptied', function() { reportVideoSources(video); });
             video.addEventListener('play', function() { activate(video); post({ type: 'playing' }); });
             video.addEventListener('playing', function() { activate(video); post({ type: 'playing' }); });
             video.addEventListener('pause', function() { post({ type: 'paused' }); });
@@ -644,16 +988,21 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
             });
             setInterval(function() {
+              reportVideoSources(video);
               if (isPlayableVideo(video)) {
                 post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
               }
             }, 500);
           }
+          installNetworkStreamHooks();
           window.__multigramWebVideoControl = control;
           window.addEventListener('message', function(event) {
             var data = event.data;
             if (data && data.__multigramWebVideoFound && window.top === window) {
               isolateFrameForSource(event.source);
+            }
+            if (data && data.__multigramWebVideoStreamFound && data.__multigramWebVideoStreamFound.url) {
+              post(data.__multigramWebVideoStreamFound);
             }
             if (data && data.__multigramWebVideoCommand) {
               control(data.__multigramWebVideoCommand);
@@ -665,13 +1014,19 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             }, 120);
           }, true);
           attachKnownVideos();
+          scanResourceStreams();
           var root = document.documentElement || document.body;
           if (root) {
             var observer = new MutationObserver(function() {
               attachKnownVideos();
+              scanResourceStreams();
             });
             observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'style', 'class'] });
           }
+          setInterval(function() {
+            attachKnownVideos();
+            scanResourceStreams();
+          }, 1200);
         })();
         """
     }
