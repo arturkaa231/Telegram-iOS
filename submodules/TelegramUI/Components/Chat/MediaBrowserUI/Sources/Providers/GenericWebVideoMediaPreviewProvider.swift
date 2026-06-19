@@ -457,6 +457,10 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.statusLabel.isHidden = false
             self.statusUpdated?(.loading)
         case .readyToPlay:
+            guard let item = self.streamPlayerItem, self.hasPlayableVideoTrack(item) else {
+                self.fallbackFromFailedStream(message: "Поток без видео")
+                return
+            }
             self.statusLabel.isHidden = true
             self.openExternallyButton.isHidden = true
             self.publishStreamStatus(playbackStatus: self.streamPlayer.map { self.playbackStatus(for: $0.timeControlStatus) })
@@ -468,6 +472,25 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         @unknown default:
             self.fallbackFromFailedStream(message: "Поток не поддерживается")
         }
+    }
+
+    private func hasPlayableVideoTrack(_ item: AVPlayerItem) -> Bool {
+        if Self.isPlayableVideoSize(item.presentationSize) {
+            return true
+        }
+        if item.asset.tracks(withMediaType: .video).contains(where: { Self.isPlayableVideoSize($0.naturalSize) }) {
+            return true
+        }
+        for track in item.tracks {
+            if let assetTrack = track.assetTrack, assetTrack.mediaType == .video, Self.isPlayableVideoSize(assetTrack.naturalSize) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private static func isPlayableVideoSize(_ size: CGSize) -> Bool {
+        return abs(size.width) > 1.0 && abs(size.height) > 1.0
     }
 
     private func fallbackFromFailedStream(message: String) {
@@ -513,7 +536,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         guard let player = self.streamPlayer, let item = self.streamPlayerItem else {
             return
         }
-        let duration = Self.seconds(item.duration)
+        let duration = self.streamDuration(for: item)
         let timestamp = min(max(0.0, Self.seconds(player.currentTime())), duration > 0.0 ? duration : Double.greatestFiniteMagnitude)
         let status = explicitStatus ?? self.playbackStatus(for: player.timeControlStatus)
         self.currentPlaybackStatus = status
@@ -522,7 +545,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.statusPromise.set(.single(MediaPlayerStatus(
             generationTimestamp: CACurrentMediaTime(),
             duration: duration,
-            dimensions: CGSize(width: 16.0, height: 9.0),
+            dimensions: Self.isPlayableVideoSize(item.presentationSize) ? item.presentationSize : CGSize(width: 16.0, height: 9.0),
             timestamp: timestamp,
             baseRate: 1.0,
             seekId: 0,
@@ -539,6 +562,23 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         case .buffering:
             self.statusUpdated?(.loading)
         }
+    }
+
+    private func streamDuration(for item: AVPlayerItem) -> Double {
+        let assetDuration = Self.seconds(item.duration)
+        if assetDuration >= Self.minimumPlayableDuration {
+            return assetDuration
+        }
+        for value in item.seekableTimeRanges {
+            let range = value.timeRangeValue
+            let start = Self.seconds(range.start)
+            let duration = Self.seconds(range.duration)
+            let end = start + duration
+            if end >= Self.minimumPlayableDuration {
+                return end
+            }
+        }
+        return 0.0
     }
 
     private func publishStatus(_ explicitStatus: MediaPlayerPlaybackStatus?) {
