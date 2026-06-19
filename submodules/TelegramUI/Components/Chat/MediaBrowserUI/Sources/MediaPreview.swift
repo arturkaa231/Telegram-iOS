@@ -64,6 +64,7 @@ public final class MediaPreviewProviderRegistry {
     public init() {
         self.register(YouTubeMediaPreviewProvider())
         self.register(DirectStreamMediaPreviewProvider())
+        self.register(GenericWebVideoMediaPreviewProvider())
         self.register(VideoMediaPreviewProvider())
         self.register(AudioMediaPreviewProvider())
         self.register(ImageMediaPreviewProvider())
