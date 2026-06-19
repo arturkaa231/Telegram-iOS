@@ -22,6 +22,9 @@ enum MediaBrowserURLClassifier {
         if self.isSupportedDirectStream(url) {
             return .directStream(url: url)
         }
+        if self.isSupportedWebPage(url) {
+            return .unsupportedUrl(url: url)
+        }
         return nil
     }
 
@@ -140,5 +143,12 @@ enum MediaBrowserURLClassifier {
             return true
         }
         return false
+    }
+
+    private static func isSupportedWebPage(_ url: URL) -> Bool {
+        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else {
+            return false
+        }
+        return url.host?.isEmpty == false
     }
 }
