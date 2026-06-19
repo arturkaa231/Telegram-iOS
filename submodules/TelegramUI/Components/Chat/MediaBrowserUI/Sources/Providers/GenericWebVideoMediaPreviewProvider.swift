@@ -885,6 +885,100 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             }
             return bestScore >= 0 ? best : null;
           }
+          function nodeTextSignature(node) {
+            if (!node) { return ''; }
+            var parts = [];
+            try { parts.push(node.id || ''); } catch (e) {}
+            try { parts.push(node.className || ''); } catch (e) {}
+            try { parts.push(node.getAttribute('aria-label') || ''); } catch (e) {}
+            try { parts.push(node.getAttribute('title') || ''); } catch (e) {}
+            try { parts.push(node.getAttribute('src') || ''); } catch (e) {}
+            try { parts.push(node.getAttribute('data-src') || ''); } catch (e) {}
+            return String(parts.join(' ')).toLowerCase();
+          }
+          function playerShellScore(node) {
+            if (!node || node === document.body || node === document.documentElement || !isVisible(node)) { return -1; }
+            var rect = node.getBoundingClientRect();
+            if (rect.width < 120 || rect.height < 80) { return -1; }
+            var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+            var area = rect.width * rect.height;
+            if (area > viewportArea * 0.92) { return -1; }
+            var aspect = rect.width / Math.max(1, rect.height);
+            var signature = nodeTextSignature(node);
+            var score = Math.min(160000, area);
+            if (node.tagName === 'IFRAME' || node.tagName === 'EMBED' || node.tagName === 'OBJECT') { score += 260000; }
+            if (node.querySelector) {
+              try {
+                if (node.querySelector('video, iframe, embed, object')) { score += 180000; }
+                if (node.querySelector('button, [role="button"], [class*="play" i], [id*="play" i]')) { score += 70000; }
+              } catch (e) {}
+            }
+            if (/(player|video|movie|film|watch|embed|iframe|jwplayer|vjs|plyr|media|kinobox|cdn|stream)/i.test(signature)) { score += 140000; }
+            if (aspect >= 1.2 && aspect <= 2.4) { score += 90000; }
+            if (rect.top >= 0 && rect.top < window.innerHeight * 0.85) { score += 50000; }
+            return score;
+          }
+          function findPlayerShell() {
+            var selectors = [
+              'video',
+              'iframe',
+              'embed',
+              'object',
+              '.jwplayer',
+              '.video-js',
+              '.plyr',
+              '.vjs-tech',
+              '.vjs-poster',
+              '.mejs-container',
+              '[class*="player" i]',
+              '[id*="player" i]',
+              '[class*="video" i]',
+              '[id*="video" i]',
+              '[class*="movie" i]',
+              '[id*="movie" i]',
+              '[class*="film" i]',
+              '[id*="film" i]',
+              '[class*="watch" i]',
+              '[id*="watch" i]',
+              '[data-player]',
+              '[data-video]'
+            ];
+            var seen = [];
+            var best = null;
+            var bestScore = -1;
+            for (var i = 0; i < selectors.length; i++) {
+              try {
+                var nodes = document.querySelectorAll(selectors[i]);
+                for (var j = 0; j < nodes.length; j++) {
+                  var node = nodes[j];
+                  if (seen.indexOf(node) !== -1) { continue; }
+                  seen.push(node);
+                  var score = playerShellScore(node);
+                  if (score > bestScore) {
+                    bestScore = score;
+                    best = node;
+                  }
+                }
+              } catch (e) {}
+            }
+            return bestScore >= 160000 ? best : null;
+          }
+          function activatePlayerShell() {
+            var video = findVideo();
+            if (video && activate(video)) { return true; }
+            var shell = findPlayerShell();
+            if (!shell) { return false; }
+            isolateElement(shell);
+            notifyParentVideoFound();
+            if (shell.tagName === 'IFRAME') {
+              try {
+                if (shell.contentWindow) {
+                  shell.contentWindow.postMessage({ __multigramWebVideoCommand: { action: 'probe', value: null } }, '*');
+                }
+              } catch (e) {}
+            }
+            return true;
+          }
           function activate(video) {
             if (!isPlayableVideo(video)) { return false; }
             reportVideoSources(video);
@@ -978,6 +1072,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             var action = payload && payload.action;
             if (!video) {
               if (action === 'play' || action === 'toggle') {
+                activatePlayerShell();
                 if (clickCandidate()) {
                   setTimeout(function() {
                     var delayedVideo = findVideo();
@@ -1066,20 +1161,24 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           document.addEventListener('click', function() {
             setTimeout(function() {
               attach(findVideo());
+              activatePlayerShell();
             }, 120);
           }, true);
           attachKnownVideos();
+          activatePlayerShell();
           scanResourceStreams();
           var root = document.documentElement || document.body;
           if (root) {
             var observer = new MutationObserver(function() {
               attachKnownVideos();
+              activatePlayerShell();
               scanResourceStreams();
             });
             observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'style', 'class'] });
           }
           setInterval(function() {
             attachKnownVideos();
+            activatePlayerShell();
             scanResourceStreams();
           }, 1200);
         })();
