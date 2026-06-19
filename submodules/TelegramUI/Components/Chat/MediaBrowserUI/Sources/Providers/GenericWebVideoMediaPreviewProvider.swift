@@ -37,6 +37,10 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private var lastDuration: Double = 0.0
     private var lastTimestamp: Double = 0.0
     private var currentPlaybackStatus: MediaPlayerPlaybackStatus = .paused
+    private var lastPublishedDuration: Double = -1.0
+    private var lastPublishedTimestamp: Double = -1.0
+    private var lastPublishedPlaybackStatus: MediaPlayerPlaybackStatus?
+    private var lastPublishedSoundEnabled: Bool?
     private var isMuted: Bool = false
 
     var statusUpdated: ((MediaPreviewPlaybackStatus) -> Void)?
@@ -174,8 +178,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
         self.statusLabel.isHidden = true
         self.openExternallyButton.isHidden = true
-        self.publishStatus(.paused)
-        self.statusUpdated?(.paused)
+        self.statusUpdated?(.idle)
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
@@ -222,8 +225,15 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.publishStatus(.paused)
             self.statusUpdated?(.ended)
         case "time":
-            self.lastTimestamp = body["currentTime"] as? Double ?? self.lastTimestamp
-            self.lastDuration = body["duration"] as? Double ?? self.lastDuration
+            let timestamp = Self.normalizedDouble(body["currentTime"], fallback: self.lastTimestamp)
+            let duration = Self.normalizedDouble(body["duration"], fallback: self.lastDuration)
+            let timestampChanged = abs(timestamp - self.lastTimestamp) >= 0.05
+            let durationChanged = abs(duration - self.lastDuration) >= 0.05
+            guard timestampChanged || durationChanged || duration > 0.0 else {
+                return
+            }
+            self.lastTimestamp = timestamp
+            self.lastDuration = duration
             self.publishStatus(nil)
         case "unavailable":
             self.statusUpdated?(.error("Видео недоступно на этой странице"))
@@ -236,15 +246,29 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         if let explicitStatus = explicitStatus {
             self.currentPlaybackStatus = explicitStatus
         }
+        let duration = max(0.0, self.lastDuration)
+        let timestamp = max(0.0, self.lastTimestamp)
+        let soundEnabled = !self.isMuted
+        let statusChanged = self.lastPublishedPlaybackStatus != self.currentPlaybackStatus
+        let durationChanged = abs(duration - self.lastPublishedDuration) >= 0.05
+        let timestampChanged = abs(timestamp - self.lastPublishedTimestamp) >= 0.05
+        let soundChanged = self.lastPublishedSoundEnabled != soundEnabled
+        guard statusChanged || durationChanged || timestampChanged || soundChanged else {
+            return
+        }
+        self.lastPublishedPlaybackStatus = self.currentPlaybackStatus
+        self.lastPublishedDuration = duration
+        self.lastPublishedTimestamp = timestamp
+        self.lastPublishedSoundEnabled = soundEnabled
         self.statusPromise.set(.single(MediaPlayerStatus(
             generationTimestamp: CACurrentMediaTime(),
-            duration: max(0.0, self.lastDuration),
+            duration: duration,
             dimensions: CGSize(width: 16.0, height: 9.0),
-            timestamp: max(0.0, self.lastTimestamp),
+            timestamp: timestamp,
             baseRate: 1.0,
             seekId: 0,
             status: self.currentPlaybackStatus,
-            soundEnabled: !self.isMuted
+            soundEnabled: soundEnabled
         )))
     }
 
@@ -305,6 +329,21 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         """
     }
 
+    private static func normalizedDouble(_ value: Any?, fallback: Double) -> Double {
+        let result: Double
+        if let value = value as? Double {
+            result = value
+        } else if let value = value as? NSNumber {
+            result = value.doubleValue
+        } else {
+            result = fallback
+        }
+        guard result.isFinite else {
+            return fallback
+        }
+        return max(0.0, result)
+    }
+
     private static func bridgeScript() -> String {
         return """
         (function() {
@@ -318,32 +357,94 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function finite(value) {
             return Number.isFinite(value) ? value : 0;
           }
+          function isVisible(node) {
+            if (!node || !node.getBoundingClientRect) { return false; }
+            var style = window.getComputedStyle(node);
+            if (!style || style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) {
+              return false;
+            }
+            var rect = node.getBoundingClientRect();
+            return rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
+          }
           function findVideo() {
-            return document.querySelector('video');
+            var videos = Array.prototype.slice.call(document.querySelectorAll('video'));
+            for (var i = 0; i < videos.length; i++) {
+              if (isVisible(videos[i])) {
+                return videos[i];
+              }
+            }
+            return videos[0] || null;
+          }
+          function dispatchClick(node) {
+            if (!node) { return false; }
+            try {
+              var rect = node.getBoundingClientRect ? node.getBoundingClientRect() : null;
+              var x = rect ? rect.left + rect.width / 2 : 0;
+              var y = rect ? rect.top + rect.height / 2 : 0;
+              ['pointerdown', 'mousedown', 'mouseup', 'click'].forEach(function(type) {
+                var event;
+                if (window.PointerEvent && type.indexOf('pointer') === 0) {
+                  event = new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 1, pointerType: 'touch', clientX: x, clientY: y });
+                } else {
+                  event = new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+                }
+                node.dispatchEvent(event);
+              });
+              if (typeof node.click === 'function') {
+                node.click();
+              }
+              return true;
+            } catch (e) {
+              try {
+                node.click();
+                return true;
+              } catch (inner) {}
+            }
+            return false;
           }
           function clickCandidate() {
             var selectors = [
               'button[aria-label*="Play" i]',
               'button[title*="Play" i]',
               '.vjs-big-play-button',
+              '.vjs-poster',
               '.plyr__control--overlaid',
+              '.plyr__poster',
+              '.jw-display-icon-container',
               '.jw-icon-playback',
+              '.jw-preview',
               '.jwplayer',
               '.mejs-overlay-button',
+              '.mejs-overlay-play',
+              '[role="button"][aria-label*="Play" i]',
               '[class*="play" i]',
-              '[id*="play" i]'
+              '[id*="play" i]',
+              '[onclick]'
             ];
+            var candidates = [];
             for (var i = 0; i < selectors.length; i++) {
-              var node = null;
               try {
-                node = document.querySelector(selectors[i]);
+                var nodes = document.querySelectorAll(selectors[i]);
+                for (var j = 0; j < nodes.length; j++) {
+                  if (isVisible(nodes[j])) {
+                    candidates.push(nodes[j]);
+                  }
+                }
               } catch (e) {}
-              if (node) {
-                try {
-                  node.click();
-                  return true;
-                } catch (e) {}
+            }
+            candidates.sort(function(a, b) {
+              var ar = a.getBoundingClientRect();
+              var br = b.getBoundingClientRect();
+              return (br.width * br.height) - (ar.width * ar.height);
+            });
+            for (var k = 0; k < candidates.length; k++) {
+              if (dispatchClick(candidates[k])) {
+                return true;
               }
+            }
+            var video = findVideo();
+            if (video && dispatchClick(video)) {
+              return true;
             }
             return false;
           }
@@ -370,12 +471,18 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             video.setAttribute('playsinline', 'true');
             video.setAttribute('webkit-playsinline', 'true');
             if (action === 'play') {
-              video.play();
+              var playPromise = video.play();
+              if (playPromise && typeof playPromise.catch === 'function') {
+                playPromise.catch(function() { clickCandidate(); });
+              }
             } else if (action === 'pause') {
               video.pause();
             } else if (action === 'toggle') {
               if (video.paused) {
-                video.play();
+                var togglePromise = video.play();
+                if (togglePromise && typeof togglePromise.catch === 'function') {
+                  togglePromise.catch(function() { clickCandidate(); });
+                }
               } else {
                 video.pause();
               }
@@ -410,6 +517,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               control(data.__multigramWebVideoCommand);
             }
           });
+          document.addEventListener('click', function() {
+            setTimeout(function() {
+              attach(findVideo());
+            }, 120);
+          }, true);
           attach(findVideo());
           var root = document.documentElement || document.body;
           if (root) {

@@ -76,6 +76,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
     private let remoteSeekTolerance: Double = 1.5
+    private var lastReportedPlaybackTimestamp: Double?
+    private var lastReportedPlaybackProgress: CGFloat?
+    private var lastReportedPlaybackIsPlaying: Bool?
 
     private var currentItem: MediaBrowserItem?
     private var suppressPulseCallback: Bool = false
@@ -84,6 +87,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     private var usesEmbeddedPlaybackChrome: Bool {
         if case .youtube = self.currentItem?.playableSource {
+            return true
+        }
+        if case .unsupportedUrl = self.currentItem?.playableSource {
             return true
         }
         return false
@@ -320,6 +326,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         }
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(previewAreaTapped))
+        tap.cancelsTouchesInView = false
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
         self.previewContainer.view.isUserInteractionEnabled = true
         self.previewContainer.view.addGestureRecognizer(tap)
     }
@@ -446,6 +455,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         }
         self.previewAspectRatio = nil
         self.isPlaying = false
+        self.lastReportedPlaybackTimestamp = nil
+        self.lastReportedPlaybackProgress = nil
+        self.lastReportedPlaybackIsPlaying = nil
         self.playButton.isHidden = true
         self.loadingIndicator.stopAnimating()
 
@@ -693,6 +705,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.fitScrubbingNode.status = nil
             self.fitScrubbingNode.bufferingStatus = nil
             self.expandStatusDisposable.set(nil)
+            self.lastReportedPlaybackTimestamp = nil
+            self.lastReportedPlaybackProgress = nil
+            self.lastReportedPlaybackIsPlaying = nil
             return
         }
         self.expandScrubbingNode.status = status
@@ -721,8 +736,27 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             case .paused, .buffering:
                 isPlaying = false
             }
-            self.onPlaybackPositionUpdated?(s.timestamp, progress, isPlaying)
+            self.reportPlaybackPositionIfNeeded(timestamp: s.timestamp, progress: progress, isPlaying: isPlaying, duration: s.duration)
         }))
+    }
+
+    private func reportPlaybackPositionIfNeeded(timestamp: Double, progress: CGFloat, isPlaying: Bool, duration: Double) {
+        guard duration > 0.0, timestamp.isFinite, progress.isFinite else {
+            return
+        }
+        let previousTimestamp = self.lastReportedPlaybackTimestamp
+        let previousProgress = self.lastReportedPlaybackProgress
+        let previousIsPlaying = self.lastReportedPlaybackIsPlaying
+        let timestampChanged = previousTimestamp.map { abs(timestamp - $0) >= 0.25 } ?? true
+        let progressChanged = previousProgress.map { abs(progress - $0) >= 0.0025 } ?? true
+        let playbackChanged = previousIsPlaying.map { $0 != isPlaying } ?? true
+        guard timestampChanged || progressChanged || playbackChanged else {
+            return
+        }
+        self.lastReportedPlaybackTimestamp = timestamp
+        self.lastReportedPlaybackProgress = progress
+        self.lastReportedPlaybackIsPlaying = isPlaying
+        self.onPlaybackPositionUpdated?(timestamp, progress, isPlaying)
     }
 
     private static func formatTime(_ seconds: Double) -> String {
