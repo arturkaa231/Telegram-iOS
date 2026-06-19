@@ -101,8 +101,15 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         return false
     }
 
+    private var usesGenericWebPlayback: Bool {
+        if case .unsupportedUrl = self.currentItem?.playableSource {
+            return true
+        }
+        return false
+    }
+
     private var shouldShowCompactEmbeddedAction: Bool {
-        return self.usesEmbeddedPlaybackChrome && !self.isExpanded && !self.isFocusMode
+        return self.usesEmbeddedPlaybackChrome && !self.usesGenericWebPlayback && !self.isExpanded && !self.isFocusMode
     }
 
     init(context: AccountContext, presentationData: PresentationData) {
@@ -597,6 +604,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     @objc private func playTapped() {
+        if self.usesGenericWebPlayback {
+            return
+        }
         if self.usesEmbeddedPlaybackChrome {
             self.previewNode?.togglePlayPause()
             return
@@ -606,6 +616,9 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     @objc private func previewAreaTapped() {
+        if self.usesGenericWebPlayback {
+            return
+        }
         if self.usesEmbeddedPlaybackChrome {
             self.previewNode?.togglePlayPause()
             return
