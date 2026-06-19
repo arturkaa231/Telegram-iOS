@@ -163,7 +163,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
-        if let candidate = self.pendingStreamCandidate {
+        if let candidate = self.pendingStreamCandidate, candidate.isPrimaryVideoSource {
             self.pendingStreamCandidate = nil
             self.activateStream(candidate)
             return
@@ -191,7 +191,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
-        if let candidate = self.pendingStreamCandidate {
+        if let candidate = self.pendingStreamCandidate, candidate.isPrimaryVideoSource {
             self.pendingStreamCandidate = nil
             self.activateStream(candidate)
             return
@@ -356,9 +356,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             cookie: cookie,
             isPrimaryVideoSource: source == "video-source"
         )
-        if self.pendingStreamPlayback || candidate.isPrimaryVideoSource {
+        if candidate.isPrimaryVideoSource {
             self.activateStream(candidate)
-        } else if self.pendingStreamCandidate == nil {
+        } else if self.pendingStreamCandidate == nil && !self.hasPlayableVideo {
             self.pendingStreamCandidate = candidate
         }
     }
@@ -884,6 +884,15 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             var rect = node.getBoundingClientRect();
             return rect.width >= 8 && rect.height >= 8 && rect.bottom > 0 && rect.right > 0 && rect.top < window.innerHeight && rect.left < window.innerWidth;
           }
+          function isDisplayable(node) {
+            if (!node || !node.getBoundingClientRect) { return false; }
+            var style = window.getComputedStyle(node);
+            if (!style || style.visibility === 'hidden' || style.display === 'none' || Number(style.opacity) === 0) {
+              return false;
+            }
+            var rect = node.getBoundingClientRect();
+            return rect.width >= 8 && rect.height >= 8;
+          }
           function hasVideoSource(video) {
             if (!video) { return false; }
             if (video.currentSrc || video.src) { return true; }
@@ -902,11 +911,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           }
           function videoScore(video) {
             if (!video || !hasVideoSource(video)) { return -1; }
+            if (!isDisplayable(video)) { return -1; }
             var score = 0;
-            if (isVisible(video)) {
-              var rect = video.getBoundingClientRect();
-              score += Math.min(100000, rect.width * rect.height);
-            }
+            var rect = video.getBoundingClientRect();
+            score += Math.min(100000, rect.width * rect.height);
+            if (isVisible(video)) { score += 50000; }
             if (video.readyState >= 1) { score += 100000; }
             if (Number.isFinite(video.duration) && video.duration > 0) { score += 100000; }
             if (!video.paused) { score += 100000; }
@@ -937,12 +946,12 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return String(parts.join(' ')).toLowerCase();
           }
           function playerShellScore(node) {
-            if (!node || node === document.body || node === document.documentElement || !isVisible(node)) { return -1; }
+            if (!node || node === document.body || node === document.documentElement || !isDisplayable(node)) { return -1; }
             var rect = node.getBoundingClientRect();
             if (rect.width < 120 || rect.height < 80) { return -1; }
             var viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
             var area = rect.width * rect.height;
-            if (area > viewportArea * 0.92) { return -1; }
+            if (isVisible(node) && area > viewportArea * 0.92) { return -1; }
             var aspect = rect.width / Math.max(1, rect.height);
             var signature = nodeTextSignature(node);
             var score = Math.min(160000, area);
@@ -955,7 +964,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             }
             if (/(player|video|movie|film|watch|embed|iframe|jwplayer|vjs|plyr|media|kinobox|cdn|stream)/i.test(signature)) { score += 140000; }
             if (aspect >= 1.2 && aspect <= 2.4) { score += 90000; }
-            if (rect.top >= 0 && rect.top < window.innerHeight * 0.85) { score += 50000; }
+            if (isVisible(node)) { score += 50000; }
+            if (node.tagName !== 'IFRAME' && node.tagName !== 'EMBED' && node.tagName !== 'OBJECT' && (aspect < 1.0 || aspect > 2.8)) { score -= 120000; }
             return score;
           }
           function findPlayerShell() {
@@ -1022,7 +1032,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function activate(video) {
             if (!isPlayableVideo(video)) { return false; }
             reportVideoSources(video);
-            if (!isVisible(video)) { return false; }
+            if (!isDisplayable(video)) { return false; }
             isolateElement(video);
             notifyParentVideoFound();
             post({ type: 'time', currentTime: finite(video.currentTime), duration: finiteDuration(video.duration) });
