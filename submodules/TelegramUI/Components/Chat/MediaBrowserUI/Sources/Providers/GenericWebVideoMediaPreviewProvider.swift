@@ -88,11 +88,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     var canPlay: Bool {
-        return false
+        return self.allowsNativeStreamPlayback || self.streamPlayer != nil || self.pendingStreamCandidate != nil
     }
 
     var playbackStatus: Signal<MediaPlayerStatus, NoError>? {
-        return nil
+        return self.allowsNativeStreamPlayback ? self.statusPromise.get() : nil
     }
 
     var bufferingStatus: Signal<(RangeSet<Int64>, Int64)?, NoError>? {
@@ -287,6 +287,8 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.currentPageUrl = url
         self.allowsNativeStreamPlayback = allowsNativeStreams
         self.pendingStreamCandidate = nil
+        self.webView.isHidden = allowsNativeStreams
+        self.statusUpdated?(.loading)
         var request = URLRequest(url: url)
         if let referer = referer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
@@ -416,6 +418,9 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         if self.pendingStreamPlayback {
             self.pendingStreamCandidate = nil
             self.activateStream(candidate)
+        } else if candidate.isPrimaryVideoSource {
+            self.pendingStreamCandidate = nil
+            self.activateStream(candidate)
         } else {
             if self.pendingStreamCandidate == nil || candidate.isPrimaryVideoSource {
                 self.pendingStreamCandidate = candidate
@@ -510,7 +515,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.streamPlayerItem = nil
         self.playerView.playerLayer.player = nil
         self.playerView.isHidden = true
-        self.webView.isHidden = false
+        self.webView.isHidden = self.allowsNativeStreamPlayback
         self.activeStreamUrl = nil
     }
 

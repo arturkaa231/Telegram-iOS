@@ -85,6 +85,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private var lastReportedPlaybackProgress: CGFloat?
     private var lastReportedPlaybackIsPlaying: Bool?
     private var pendingInitialSeek: (messageId: EngineMessage.Id, position: Double)?
+    private var hasBoundPlayablePreview: Bool = false
 
     private var currentItem: MediaBrowserItem?
     private var suppressPulseCallback: Bool = false
@@ -96,14 +97,14 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             return true
         }
         if case .unsupportedUrl = self.currentItem?.playableSource {
-            return true
+            return self.usesGenericWebPlayback
         }
         return false
     }
 
     private var usesGenericWebPlayback: Bool {
         if case .unsupportedUrl = self.currentItem?.playableSource {
-            return true
+            return !(self.previewNode?.canPlay ?? false)
         }
         return false
     }
@@ -482,6 +483,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.lastReportedPlaybackTimestamp = nil
         self.lastReportedPlaybackProgress = nil
         self.lastReportedPlaybackIsPlaying = nil
+        self.hasBoundPlayablePreview = false
         self.playButton.isHidden = true
         self.loadingIndicator.stopAnimating()
 
@@ -548,6 +550,13 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private func handlePreviewStatus(_ status: MediaPreviewPlaybackStatus) {
+        let didBecomePlayable = self.previewNode?.canPlay == true && !self.hasBoundPlayablePreview
+        if self.previewNode?.canPlay == true && !self.hasBoundPlayablePreview {
+            self.bindExpandStatus(self.previewNode)
+        }
+        if didBecomePlayable && self.lastSize.width > 0.0 && self.lastSize.height > 0.0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
         self.onPlaybackStatusChanged?(status)
         switch status {
         case .idle:
@@ -799,6 +808,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     private func bindExpandStatus(_ preview: MediaPreviewNode?) {
         guard let preview = preview, let status = preview.playbackStatus, preview.canPlay else {
+            self.hasBoundPlayablePreview = false
             self.expandScrubbingNode.status = nil
             self.expandScrubbingNode.bufferingStatus = nil
             self.fitScrubbingNode.status = nil
@@ -809,6 +819,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.lastReportedPlaybackIsPlaying = nil
             return
         }
+        self.hasBoundPlayablePreview = true
         self.expandScrubbingNode.status = status
         self.expandScrubbingNode.bufferingStatus = preview.bufferingStatus
         self.fitScrubbingNode.status = status
@@ -874,13 +885,14 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private func updateBlock2Progress(_ status: MediaPlayerStatus) {
-        guard status.duration >= Self.minimumDisplayDuration, self.containerNode.frame.width > 0 else {
-            self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: 0.0, height: 2.0)
+        let trackWidth = self.block2ProgressTrack.bounds.width
+        let trackHeight = max(2.0, self.block2ProgressTrack.bounds.height)
+        guard status.duration >= Self.minimumDisplayDuration, trackWidth > 0.0 else {
+            self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: 0.0, height: trackHeight)
             return
         }
         let progress = max(0.0, min(1.0, status.timestamp / status.duration))
-        let trackWidth = self.containerNode.frame.width
-        self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: trackWidth * progress, height: 2.0)
+        self.block2ProgressFill.frame = CGRect(x: 0, y: 0, width: trackWidth * progress, height: trackHeight)
     }
 
     private func updateBlock3Time(_ status: MediaPlayerStatus) {
@@ -1118,7 +1130,23 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.deleteButton.isHidden = true
         _ = canPlayPlayback
 
-        self.block2ProgressTrack.isHidden = true
+        if canPlay && !expandedChrome {
+            self.block2ProgressTrack.isHidden = false
+            let progressHeight: CGFloat = 3.0
+            let progressY = min(innerHeight - progressHeight - 4.0, previewFrame.maxY + 4.0)
+            self.block2ProgressTrack.frame = CGRect(
+                x: previewFrame.minX,
+                y: progressY,
+                width: previewFrame.width,
+                height: progressHeight
+            )
+            self.block2ProgressTrack.layer.cornerRadius = progressHeight / 2.0
+            self.block2ProgressFill.layer.cornerRadius = progressHeight / 2.0
+            self.updateBlock2Progress(self.expandStatusValue ?? MediaPlayerStatus(generationTimestamp: 0.0, duration: 0.0, dimensions: .zero, timestamp: 0.0, baseRate: 1.0, seekId: 0, status: .paused, soundEnabled: !self.isMuted))
+        } else {
+            self.block2ProgressTrack.isHidden = true
+            self.block2ProgressFill.frame = .zero
+        }
 
         let scrubberVisible = expandedChrome && canPlay
         self.expandRemainingLabel.isHidden = true
