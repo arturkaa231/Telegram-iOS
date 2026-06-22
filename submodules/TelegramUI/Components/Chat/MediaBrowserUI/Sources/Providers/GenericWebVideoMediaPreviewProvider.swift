@@ -85,11 +85,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     var canPlay: Bool {
-        return true
+        return false
     }
 
     var playbackStatus: Signal<MediaPlayerStatus, NoError>? {
-        return self.statusPromise.get()
+        return nil
     }
 
     var bufferingStatus: Signal<(RangeSet<Int64>, Int64)?, NoError>? {
@@ -989,20 +989,20 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return bestScore >= 160000 ? best : null;
           }
           function activatePlayerShell() {
-            var video = findVideo();
-            if (video && activate(video)) { return true; }
             var shell = findPlayerShell();
-            if (!shell) { return false; }
-            isolateElement(shell);
-            notifyParentVideoFound();
-            if (shell.tagName === 'IFRAME') {
+            if (shell) {
+              isolateElement(shell);
+              notifyParentVideoFound();
               try {
                 if (shell.contentWindow) {
                   shell.contentWindow.postMessage({ __multigramWebVideoCommand: { action: 'probe', value: null } }, '*');
                 }
               } catch (e) {}
+              return true;
             }
-            return true;
+            var video = findVideo();
+            if (video && activate(video)) { return true; }
+            return false;
           }
           function activate(video) {
             if (!isPlayableVideo(video)) { return false; }
@@ -1048,6 +1048,11 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           }
           function clickCandidate() {
             var selectors = [
+              '#gidonlinefun iframe',
+              '#gidonlinefun',
+              'iframe',
+              'embed',
+              'object',
               'button[aria-label*="Play" i]',
               'button[title*="Play" i]',
               '.vjs-big-play-button',
