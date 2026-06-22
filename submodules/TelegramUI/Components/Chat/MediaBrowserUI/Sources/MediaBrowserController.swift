@@ -1218,7 +1218,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         } else {
             let compactWidth = layout.size.width - horizontalPadding * 2.0
             let compactHeight = min(270.0, max(196.0, floor(compactWidth * 0.56)))
-            let compactY = max(layout.safeInsets.top + 118.0, 148.0)
+            let compactY = max(layout.safeInsets.top + 64.0, 92.0)
             contentFrame = CGRect(
                 x: horizontalPadding,
                 y: compactY,
