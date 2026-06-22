@@ -63,10 +63,13 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     private var streamTimeControlObservation: NSKeyValueObservation?
     private var streamTimeObserver: Any?
     private var streamDidPlayToEndObserver: NSObjectProtocol?
+    private var externalResolverTask: URLSessionDataTask?
     private var activeStreamUrl: URL?
     private var pendingStreamCandidate: StreamCandidate?
     private var rejectedStreamUrls = Set<URL>()
     private var pendingStreamPlayback: Bool = false
+    private var allowsNativeStreamPlayback: Bool = false
+    private var currentPageUrl: URL?
     private var lastDuration: Double = 0.0
     private var lastTimestamp: Double = 0.0
     private var currentPlaybackStatus: MediaPlayerPlaybackStatus = .paused
@@ -151,6 +154,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     deinit {
+        self.externalResolverTask?.cancel()
         self.releaseStreamPlayer()
         self.webView.configuration.userContentController.removeScriptMessageHandler(forName: "multigramWebVideo")
         self.webView.stopLoading()
@@ -272,7 +276,65 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         self.statusLabel.isHidden = false
         self.openExternallyButton.isHidden = true
         self.statusUpdated?(.loading)
-        self.webView.load(URLRequest(url: url))
+        if Self.isGidOnlineUrl(url), let title = Self.cleanExternalVideoTitle(self.item.fileName), !title.isEmpty {
+            self.resolveGidOnlineEmbed(title: title, originalUrl: url)
+        } else {
+            self.loadWebPage(url: url, referer: nil, allowsNativeStreams: false)
+        }
+    }
+
+    private func loadWebPage(url: URL, referer: URL?, allowsNativeStreams: Bool) {
+        self.currentPageUrl = url
+        self.allowsNativeStreamPlayback = allowsNativeStreams
+        self.pendingStreamCandidate = nil
+        var request = URLRequest(url: url)
+        if let referer = referer {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        request.setValue(Self.mobileSafariUserAgent, forHTTPHeaderField: "User-Agent")
+        self.webView.load(request)
+    }
+
+    private func resolveGidOnlineEmbed(title: String, originalUrl: URL) {
+        self.externalResolverTask?.cancel()
+        self.tryResolveGidOnlineEmbed(title: title, originalUrl: originalUrl, endpointIndex: 0)
+    }
+
+    private func tryResolveGidOnlineEmbed(title: String, originalUrl: URL, endpointIndex: Int) {
+        let endpoints = Self.gidOnlineResolverEndpoints
+        guard endpointIndex < endpoints.count else {
+            self.loadWebPage(url: originalUrl, referer: nil, allowsNativeStreams: false)
+            return
+        }
+        var components = URLComponents(url: endpoints[endpointIndex], resolvingAgainstBaseURL: false)
+        components?.queryItems = [URLQueryItem(name: "title", value: title.lowercased())]
+        guard let url = components?.url else {
+            self.tryResolveGidOnlineEmbed(title: title, originalUrl: originalUrl, endpointIndex: endpointIndex + 1)
+            return
+        }
+        var request = URLRequest(url: url)
+        request.setValue(Self.mobileSafariUserAgent, forHTTPHeaderField: "User-Agent")
+        let task = URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+            Queue.mainQueue().async {
+                guard let self = self else {
+                    return
+                }
+                guard
+                    let httpResponse = response as? HTTPURLResponse,
+                    httpResponse.statusCode == 200,
+                    let data = data,
+                    let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                    let urlString = object["url"] as? String,
+                    let embedUrl = URL(string: urlString)
+                else {
+                    self.tryResolveGidOnlineEmbed(title: title, originalUrl: originalUrl, endpointIndex: endpointIndex + 1)
+                    return
+                }
+                self.loadWebPage(url: embedUrl, referer: originalUrl, allowsNativeStreams: true)
+            }
+        }
+        self.externalResolverTask = task
+        task.resume()
     }
 
     private func handleBridgeMessage(_ body: [String: Any]) {
@@ -296,6 +358,12 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             self.hasPlayableVideo = true
             self.statusLabel.isHidden = true
             self.openExternallyButton.isHidden = true
+        case "user-click":
+            self.pendingStreamPlayback = true
+            if let candidate = self.pendingStreamCandidate {
+                self.pendingStreamCandidate = nil
+                self.activateStream(candidate)
+            }
         case "stream-found":
             self.handleStreamFound(body)
         case "time":
@@ -326,10 +394,37 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     private func handleStreamFound(_ body: [String: Any]) {
-        _ = body
-        // Generic web pages should keep playback inside WebKit. Stream URLs found in
-        // page resources are often partial/audio-only CDN assets and can hide the
-        // real embedded player behind a black AVPlayer layer.
+        guard self.allowsNativeStreamPlayback else {
+            // Generic pages stay in WebKit: resource URLs from the full page are
+            // often ads, audio renditions, or partial player internals.
+            return
+        }
+        guard let urlString = body["url"] as? String, let url = Self.streamUrl(from: urlString, baseUrl: body["baseUrl"] as? String) else {
+            return
+        }
+        if self.rejectedStreamUrls.contains(url) || self.activeStreamUrl == url {
+            return
+        }
+        let referer = (body["referer"] as? String).flatMap(URL.init(string:)) ?? self.currentPageUrl
+        let candidate = StreamCandidate(
+            url: url,
+            referer: referer,
+            userAgent: body["userAgent"] as? String,
+            cookie: body["cookie"] as? String,
+            isPrimaryVideoSource: (body["source"] as? String) == "inline-script" || (body["source"] as? String) == "video-source"
+        )
+        if self.pendingStreamPlayback {
+            self.pendingStreamCandidate = nil
+            self.activateStream(candidate)
+        } else {
+            if self.pendingStreamCandidate == nil || candidate.isPrimaryVideoSource {
+                self.pendingStreamCandidate = candidate
+            }
+            self.hasPlayableVideo = true
+            self.statusLabel.isHidden = true
+            self.openExternallyButton.isHidden = true
+            self.statusUpdated?(.idle)
+        }
     }
 
     private func activateStream(_ candidate: StreamCandidate) {
@@ -686,6 +781,49 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
         return url
     }
 
+    private static let mobileSafariUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+    private static let gidOnlineResolverEndpoints: [URL] = [
+        URL(string: "https://api.synchroncode.com/autochange/info/link")!,
+        URL(string: "https://api.kinogram.best/autochange/info/link")!
+    ]
+
+    private static func isGidOnlineUrl(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else {
+            return false
+        }
+        return host.contains("gidonline")
+    }
+
+    private static func cleanExternalVideoTitle(_ title: String) -> String? {
+        var value = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let noisePrefixes = [
+            "гидонлайн - ",
+            "gidonline - "
+        ]
+        for prefix in noisePrefixes {
+            if value.lowercased().hasPrefix(prefix) {
+                value.removeFirst(prefix.count)
+                break
+            }
+        }
+        let noiseSuffixes = [
+            ". смотреть онлайн",
+            " смотреть онлайн",
+            " смотреть онлайн фильм",
+            " онлайн"
+        ]
+        let lowerValue = value.lowercased()
+        for suffix in noiseSuffixes {
+            if let range = lowerValue.range(of: suffix) {
+                value = String(value[..<range.lowerBound])
+                break
+            }
+        }
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
+
     private static func bridgeScript() -> String {
         return """
         (function() {
@@ -755,6 +893,21 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               var entries = performance.getEntriesByType ? performance.getEntriesByType('resource') : [];
               for (var i = 0; i < entries.length; i++) {
                 reportStreamUrl(entries[i].name, 'resource');
+              }
+            } catch (e) {}
+          }
+          function scanInlineStreams() {
+            try {
+              var scripts = document.querySelectorAll('script');
+              var pattern = /https?:\\/\\/[^'"\\s<>]+\\.(?:m3u8|mp4|m4v|mov|webm)[^'"\\s<>]*/ig;
+              for (var i = 0; i < scripts.length; i++) {
+                var text = scripts[i].textContent || '';
+                var match;
+                pattern.lastIndex = 0;
+                while ((match = pattern.exec(text))) {
+                  var url = match[0].replace(/\\\\u0026/g, '&');
+                  reportStreamUrl(url, 'inline-script');
+                }
               }
             } catch (e) {}
           }
@@ -1189,20 +1342,24 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             }
           });
           document.addEventListener('click', function() {
+            post({ type: 'user-click' });
             setTimeout(function() {
               attach(findVideo());
               activatePlayerShell();
+              scanInlineStreams();
             }, 120);
           }, true);
           attachKnownVideos();
           activatePlayerShell();
           scanResourceStreams();
+          scanInlineStreams();
           var root = document.documentElement || document.body;
           if (root) {
             var observer = new MutationObserver(function() {
               attachKnownVideos();
               activatePlayerShell();
               scanResourceStreams();
+              scanInlineStreams();
             });
             observer.observe(root, { childList: true, subtree: true, attributes: true, attributeFilter: ['src', 'style', 'class'] });
           }
@@ -1210,6 +1367,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             attachKnownVideos();
             activatePlayerShell();
             scanResourceStreams();
+            scanInlineStreams();
           }, 1200);
         })();
         """

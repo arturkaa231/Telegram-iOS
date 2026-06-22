@@ -6074,6 +6074,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             let innerSize: CGFloat = 24.0
             let circleButton = UIButton(type: .custom)
             circleButton.frame = CGRect(x: 0, y: 0, width: outerSize, height: outerSize)
+            circleButton.accessibilityLabel = "Медиабраузер"
+            circleButton.accessibilityTraits.insert(.button)
 
             let innerCircle = UIView(frame: CGRect(
                 x: (outerSize - innerSize) / 2.0,
