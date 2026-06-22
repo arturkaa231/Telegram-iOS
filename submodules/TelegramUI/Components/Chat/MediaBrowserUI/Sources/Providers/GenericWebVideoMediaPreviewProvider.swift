@@ -163,11 +163,6 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
-        if let candidate = self.pendingStreamCandidate, candidate.isPrimaryVideoSource {
-            self.pendingStreamCandidate = nil
-            self.activateStream(candidate)
-            return
-        }
         self.evaluate(Self.videoCommand(action: "play"))
     }
 
@@ -191,11 +186,6 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             return
         }
         self.pendingStreamPlayback = true
-        if let candidate = self.pendingStreamCandidate, candidate.isPrimaryVideoSource {
-            self.pendingStreamCandidate = nil
-            self.activateStream(candidate)
-            return
-        }
         self.evaluate(Self.videoCommand(action: "toggle"))
     }
 
@@ -356,9 +346,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
             cookie: cookie,
             isPrimaryVideoSource: source == "video-source"
         )
-        if candidate.isPrimaryVideoSource {
-            self.activateStream(candidate)
-        } else if self.pendingStreamCandidate == nil && !self.hasPlayableVideo {
+        if self.pendingStreamCandidate == nil && !candidate.isPrimaryVideoSource && !self.hasPlayableVideo {
             self.pendingStreamCandidate = candidate
         }
     }
