@@ -145,6 +145,7 @@ import GlobalControlPanelsContext
 import ChatSearchNavigationContentNode
 import ChatAgeRestrictionAlertController
 import TextProcessingScreen
+import MediaBrowserUI
 
 public final class ChatControllerOverlayPresentationData {
     public let expandData: (ASDisplayNode?, () -> Void)
@@ -238,6 +239,9 @@ struct ScrolledToMessageId: Equatable {
 }
 
 public final class ChatControllerImpl: TelegramBaseController, ChatController, GalleryHiddenMediaTarget, UIDropInteractionDelegate {    
+    private static let mediaBrowserCircleGlassTag = 10001
+    private static let mediaBrowserCircleIndicatorTag = 10002
+
     var validLayout: ContainerViewLayout?
     
     public weak var parentController: ViewController?
@@ -305,6 +309,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
     var moreInfoNavigationButton: ChatNavigationButton?
     var mediaBrowserNavigationButton: ChatNavigationButton?
     var mediaBrowserCircleButton: UIButton?
+    var mediaBrowserCircleButtonIsLive: Bool = false
+    var mediaBrowserOnTVStatusDisposable: Disposable?
     
     var historyStateDisposable: Disposable?
     
@@ -6077,20 +6083,31 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             circleButton.accessibilityLabel = "Медиабраузер"
             circleButton.accessibilityTraits.insert(.button)
 
+            let glassView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+            glassView.frame = circleButton.bounds
+            glassView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            glassView.isUserInteractionEnabled = false
+            glassView.clipsToBounds = true
+            glassView.layer.cornerRadius = outerSize / 2.0
+            glassView.contentView.backgroundColor = self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.withAlphaComponent(0.35)
+            glassView.tag = Self.mediaBrowserCircleGlassTag
+            circleButton.addSubview(glassView)
+
             let innerCircle = UIView(frame: CGRect(
                 x: (outerSize - innerSize) / 2.0,
                 y: (outerSize - innerSize) / 2.0,
                 width: innerSize,
                 height: innerSize
             ))
-            innerCircle.backgroundColor = UIColor(rgb: 0x05614C)
+            innerCircle.backgroundColor = self.mediaBrowserCircleIndicatorColor()
             innerCircle.layer.cornerRadius = innerSize / 2.0
             innerCircle.isUserInteractionEnabled = false
+            innerCircle.tag = Self.mediaBrowserCircleIndicatorTag
             circleButton.addSubview(innerCircle)
 
             circleButton.layer.cornerRadius = outerSize / 2.0
             circleButton.layer.borderWidth = 2.0
-            circleButton.layer.borderColor = self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.cgColor
+            circleButton.layer.borderColor = self.mediaBrowserCircleBorderColor().cgColor
             circleButton.clipsToBounds = true
 
             circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonAction), for: .touchUpInside)
@@ -6098,6 +6115,14 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonTouchUp), for: [.touchUpInside, .touchUpOutside, .touchCancel, .touchDragExit])
             circleButton.tag = 9999
             self.mediaBrowserCircleButton = circleButton
+            self.mediaBrowserOnTVStatusDisposable = (MediaBrowserOnTVStatusRegistry.shared.isLive(peerId: peerId)
+            |> deliverOnMainQueue).startStrict(next: { [weak self] isLive in
+                guard let self else {
+                    return
+                }
+                self.mediaBrowserCircleButtonIsLive = isLive
+                self.updateMediaBrowserCircleButtonAppearance(animated: true)
+            })
         }
         self.moreBarButton.contextAction = { [weak self] sourceNode, gesture in
             guard let self else {
@@ -6751,6 +6776,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         self.applicationInFocusDisposable?.dispose()
         self.canReadHistoryDisposable?.dispose()
         self.networkStateDisposable?.dispose()
+        self.mediaBrowserOnTVStatusDisposable?.dispose()
         self.shareStatusDisposable?.dispose()
         self.context.sharedContext.mediaManager.galleryHiddenMediaManager.removeTarget(self)
         self.updateSlowmodeStatusDisposable.dispose()
@@ -8160,16 +8186,60 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
     
+    private func mediaBrowserCircleIndicatorColor() -> UIColor {
+        if self.mediaBrowserCircleButtonIsLive {
+            return UIColor(rgb: 0x05614C)
+        } else {
+            return self.presentationData.theme.rootController.navigationBar.buttonColor
+        }
+    }
+
+    private func mediaBrowserCircleBorderColor() -> UIColor {
+        return self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.withAlphaComponent(0.55)
+    }
+
+    private func updateMediaBrowserCircleButtonAppearance(animated: Bool) {
+        guard let circleButton = self.mediaBrowserCircleButton else {
+            return
+        }
+        let indicatorColor = self.mediaBrowserCircleIndicatorColor()
+        let borderColor = self.mediaBrowserCircleBorderColor()
+        let glassColor = self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.withAlphaComponent(0.35)
+        let apply = {
+            circleButton.layer.borderColor = borderColor.cgColor
+            if let glassView = circleButton.viewWithTag(Self.mediaBrowserCircleGlassTag) as? UIVisualEffectView {
+                glassView.contentView.backgroundColor = glassColor
+            }
+            if let indicatorView = circleButton.viewWithTag(Self.mediaBrowserCircleIndicatorTag) {
+                indicatorView.backgroundColor = indicatorColor
+            }
+        }
+        if animated {
+            UIView.animate(withDuration: 0.18, delay: 0.0, options: [.curveEaseInOut], animations: apply)
+        } else {
+            apply()
+        }
+    }
+
     private func repositionMediaBrowserCircleButton(circleButton: UIButton, avatarNode: ChatAvatarNavigationNode, navBar: NavigationBar) {
+        self.updateMediaBrowserCircleButtonAppearance(animated: false)
         let avatarFrame = avatarNode.view.convert(avatarNode.bounds, to: navBar.view)
-        let spacing: CGFloat = 4.0
         let outerSize: CGFloat = 44.0
-        circleButton.frame = CGRect(
-            x: avatarFrame.minX - outerSize - spacing,
-            y: avatarFrame.midY - outerSize / 2.0,
-            width: outerSize,
-            height: outerSize
-        )
+        let spacing: CGFloat = 4.0
+        let x: CGFloat
+        if let titleView = self.chatTitleView {
+            let titleFrame = titleView.convert(titleView.bounds, to: navBar.view)
+            let minX = titleFrame.maxX + spacing
+            let maxX = avatarFrame.minX - outerSize - spacing
+            if maxX >= minX {
+                x = floorToScreenPixels((minX + maxX) / 2.0)
+            } else {
+                x = avatarFrame.minX - outerSize - spacing
+            }
+        } else {
+            x = avatarFrame.minX - outerSize - spacing
+        }
+        circleButton.frame = CGRect(x: x, y: avatarFrame.midY - outerSize / 2.0, width: outerSize, height: outerSize)
     }
 
     @objc func mediaBrowserButtonAction() {

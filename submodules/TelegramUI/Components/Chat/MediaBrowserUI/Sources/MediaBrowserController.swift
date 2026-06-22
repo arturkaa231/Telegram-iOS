@@ -367,6 +367,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var mediaLoadingState: MediaBrowserLoadingState = .idle
     private var pendingOnTVResolverLoad: Bool = false
     private var autoOpenedRemoteOnTVSessionId: String?
+    private var currentOnTVSessions: [OnTVPlaybackContext] = []
+    private var currentUnresolvedOnTVSessions: [OnTVRemotePlaybackContext] = []
     private var lastProgressRecordsReloadAt: Double = 0.0
     private var progressRecordsReloadScheduled: Bool = false
     private var focusModeToggleLocked: Bool = false
@@ -837,6 +839,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         )
     }
 
+    private func updateSharedOnTVLiveStatus() {
+        let hasLiveSession = self.currentOnTVSessions.contains(where: { $0.status == .live }) || self.currentUnresolvedOnTVSessions.contains(where: { $0.status == .live })
+        MediaBrowserOnTVStatusRegistry.shared.update(peerId: self.peerId, isLive: hasLiveSession)
+    }
+
     private func scheduleProgressRecordsReload(immediate: Bool = false) {
         self.reloadVisibleProgressRecords()
     }
@@ -992,13 +999,18 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.onTVSessionCoordinator.onSessionsUpdated = { [weak self] sessions in
             guard let self = self else { return }
+            self.currentOnTVSessions = sessions
+            self.updateSharedOnTVLiveStatus()
             self.playbackProgressStore.update(sessions: sessions)
             self.onTVListNode.updateSessions(sessions)
             self.listNode.mergePlaybackProgress(self.playbackProgressStore.progressMap(for: self.loadedItems))
             self.autoOpenRemoteLiveSessionIfNeeded(sessions)
         }
         self.onTVSessionCoordinator.onUnresolvedSessionsUpdated = { [weak self] sessions in
-            self?.onTVListNode.updateUnresolvedSessions(sessions)
+            guard let self = self else { return }
+            self.currentUnresolvedOnTVSessions = sessions
+            self.updateSharedOnTVLiveStatus()
+            self.onTVListNode.updateUnresolvedSessions(sessions)
         }
         self.onTVSessionCoordinator.onResolvingSessionsChanged = { [weak self] isResolving in
             self?.onTVListNode.updateResolvingSessions(isResolving)
@@ -1016,7 +1028,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             self?.onTVListNode.updateActiveSessionId(sessionId)
         }
         self.onTVSessionCoordinator.onPulseActiveChanged = { [weak self] isActive, animated in
-            self?.playerNode.setPulseActive(isActive, animated: animated)
+            guard let self = self else { return }
+            if isActive {
+                MediaBrowserOnTVStatusRegistry.shared.update(peerId: self.peerId, isLive: true)
+            }
+            self.playerNode.setPulseActive(isActive, animated: animated)
         }
         self.onTVSessionCoordinator.onAudienceChanged = { [weak self] participantCount in
             self?.playerNode.updateSessionAudience(participantCount: participantCount)
