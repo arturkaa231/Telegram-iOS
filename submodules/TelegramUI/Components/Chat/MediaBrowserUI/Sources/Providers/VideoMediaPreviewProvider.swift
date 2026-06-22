@@ -61,7 +61,7 @@ final class VideoPreviewNode: ASDisplayNode, MediaPreviewNode {
         self.item = item
 
         self.thumbnailView = UIImageView()
-        self.thumbnailView.contentMode = .scaleAspectFit
+        self.thumbnailView.contentMode = .scaleAspectFill
         self.thumbnailView.clipsToBounds = true
         self.thumbnailView.layer.cornerRadius = 10.0
 
@@ -109,6 +109,14 @@ final class VideoPreviewNode: ASDisplayNode, MediaPreviewNode {
             guard let self = self else { return }
             if data.complete, let uiImage = UIImage(contentsOfFile: data.path) {
                 self.thumbnailView.image = uiImage
+                let ratio = uiImage.size.width / max(1.0, uiImage.size.height)
+                if ratio.isFinite && ratio > 0.0 && abs((self.naturalAspectRatio ?? 0.0) - ratio) > 0.01 {
+                    self.naturalAspectRatio = ratio
+                    self.aspectRatioUpdated?(ratio)
+                    if self.lastSize.width > 0.0 && self.lastSize.height > 0.0 {
+                        self.updateLayout(size: self.lastSize, transition: .immediate)
+                    }
+                }
             }
         }))
     }
@@ -211,22 +219,22 @@ final class VideoPreviewNode: ASDisplayNode, MediaPreviewNode {
         self.lastSize = size
         self.thumbnailView.frame = CGRect(origin: .zero, size: size)
         if let videoNode = self.videoNode {
-            let fitted = self.fittedSize(in: size)
+            let fitted = self.filledSize(in: size)
             let origin = CGPoint(x: floor((size.width - fitted.width) / 2.0), y: floor((size.height - fitted.height) / 2.0))
             videoNode.frame = CGRect(origin: origin, size: fitted)
             videoNode.updateLayout(size: fitted, transition: transition)
         }
     }
 
-    private func fittedSize(in container: CGSize) -> CGSize {
+    private func filledSize(in container: CGSize) -> CGSize {
         guard let ratio = self.naturalAspectRatio, ratio > 0, container.width > 0, container.height > 0 else {
             return container
         }
         let containerAspect = container.width / container.height
         if ratio > containerAspect {
-            return CGSize(width: container.width, height: floor(container.width / ratio))
-        } else {
             return CGSize(width: floor(container.height * ratio), height: container.height)
+        } else {
+            return CGSize(width: container.width, height: floor(container.width / ratio))
         }
     }
 
