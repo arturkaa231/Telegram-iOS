@@ -26,7 +26,7 @@ final class MediaBrowserItemCell: UITableViewCell {
     private let thumbnailView: UIImageView = {
         let view = UIImageView()
         view.contentMode = .scaleAspectFill
-        view.layer.cornerRadius = 14
+        view.layer.cornerRadius = 6
         view.clipsToBounds = true
         return view
     }()
@@ -35,7 +35,7 @@ final class MediaBrowserItemCell: UITableViewCell {
 
     private let formatLabel: UILabel = {
         let l = UILabel()
-        l.font = UIFont.systemFont(ofSize: 11.0, weight: .semibold)
+        l.font = UIFont.systemFont(ofSize: 10.0, weight: .semibold)
         l.textAlignment = .center
         l.isHidden = true
         return l
@@ -43,7 +43,7 @@ final class MediaBrowserItemCell: UITableViewCell {
 
     private let fileNameLabel: UILabel = {
         let label = UILabel()
-        label.font = UIFont.systemFont(ofSize: 17.0, weight: .regular)
+        label.font = UIFont.systemFont(ofSize: 15.0, weight: .regular)
         label.numberOfLines = 1
         label.lineBreakMode = .byTruncatingTail
         return label
@@ -53,14 +53,14 @@ final class MediaBrowserItemCell: UITableViewCell {
 
     private let senderLabel: UILabel = {
         let label = UILabel()
-        label.font = UIFont.systemFont(ofSize: 14.0, weight: .regular)
+        label.font = UIFont.systemFont(ofSize: 12.0, weight: .regular)
         label.lineBreakMode = .byTruncatingTail
         return label
     }()
 
     private let timeLabel: UILabel = {
         let label = UILabel()
-        label.font = UIFont.systemFont(ofSize: 14.0, weight: .regular)
+        label.font = UIFont.systemFont(ofSize: 12.0, weight: .regular)
         label.textAlignment = .right
         return label
     }()
@@ -75,7 +75,7 @@ final class MediaBrowserItemCell: UITableViewCell {
 
     private let sizeLabel: UILabel = {
         let label = UILabel()
-        label.font = UIFont.systemFont(ofSize: 14.0, weight: .regular)
+        label.font = UIFont.systemFont(ofSize: 12.0, weight: .regular)
         label.textAlignment = .right
         return label
     }()
@@ -100,7 +100,7 @@ final class MediaBrowserItemCell: UITableViewCell {
     private let highlightBackgroundView: UIView = {
         let v = UIView()
         v.isHidden = true
-        v.layer.cornerRadius = 12
+        v.layer.cornerRadius = 10
         return v
     }()
 
@@ -123,7 +123,7 @@ final class MediaBrowserItemCell: UITableViewCell {
     }
 
     func setItemHighlighted(_ flag: Bool, theme: PresentationTheme) {
-        self.highlightBackgroundView.backgroundColor = theme.list.itemAccentColor.withAlphaComponent(0.12)
+        self.highlightBackgroundView.backgroundColor = UIColor.white.withAlphaComponent(0.12)
         self.highlightBackgroundView.isHidden = !flag
     }
 
@@ -157,10 +157,10 @@ final class MediaBrowserItemCell: UITableViewCell {
         let h = contentView.bounds.height
         let w = contentView.bounds.width
         let padding: CGFloat = 16.0
-        let thumbSize: CGFloat = 48.0
+        let thumbSize: CGFloat = 44.0
 
-        let highlightInsetX: CGFloat = 8.0
-        let highlightInsetY: CGFloat = 4.0
+        let highlightInsetX: CGFloat = 12.0
+        let highlightInsetY: CGFloat = 3.0
         self.highlightBackgroundView.frame = CGRect(x: highlightInsetX, y: highlightInsetY, width: w - highlightInsetX * 2.0, height: h - highlightInsetY * 2.0)
 
         thumbnailView.frame = CGRect(x: padding, y: (h - thumbSize) / 2.0, width: thumbSize, height: thumbSize)
@@ -170,8 +170,8 @@ final class MediaBrowserItemCell: UITableViewCell {
         let textRight = w - padding
         let fullTextWidth = max(40.0, textRight - textLeft)
 
-        let fileNameHeight: CGFloat = 22.0
-        let senderHeight: CGFloat = 18.0
+        let fileNameHeight: CGFloat = 20.0
+        let senderHeight: CGFloat = 16.0
         let blockHeight = fileNameHeight + senderHeight + 2.0
         let blockY = (h - blockHeight) / 2.0
 
@@ -198,17 +198,16 @@ final class MediaBrowserItemCell: UITableViewCell {
         let senderRight = timeX - rightGap
 
         let secondRowY = blockY + fileNameHeight + 2.0
-        let avatarBoxSize: CGFloat = 18.0
+        let avatarBoxSize: CGFloat = 0.0
         senderAvatarNode.view.frame = CGRect(x: textLeft, y: secondRowY + (senderHeight - avatarBoxSize) / 2.0, width: avatarBoxSize, height: avatarBoxSize)
-        senderAvatarNode.updateSize(size: CGSize(width: avatarBoxSize, height: avatarBoxSize))
-        let senderLabelLeft = senderAvatarNode.view.frame.maxX + 6.0
+        let senderLabelLeft = textLeft
         senderLabel.frame = CGRect(x: senderLabelLeft, y: secondRowY, width: max(40.0, senderRight - senderLabelLeft), height: senderHeight)
         timeLabel.frame = CGRect(x: timeX, y: secondRowY, width: timeWidth, height: senderHeight)
         sizeLabel.frame = CGRect(x: sizeX, y: secondRowY, width: sizeWidth, height: senderHeight)
 
         if let visiblePlaybackProgress {
-            let progressY = min(h - 8.0, secondRowY + senderHeight + 6.0)
-            let progressFrame = CGRect(x: textLeft, y: progressY, width: fullTextWidth, height: 3.0)
+            let progressY = min(h - 7.0, secondRowY + senderHeight + 5.0)
+            let progressFrame = CGRect(x: textLeft, y: progressY, width: fullTextWidth, height: 2.0)
             self.progressTrackView.frame = progressFrame
             self.progressFillView.frame = CGRect(x: 0.0, y: 0.0, width: progressFrame.width * visiblePlaybackProgress, height: progressFrame.height)
         } else {
@@ -221,10 +220,10 @@ final class MediaBrowserItemCell: UITableViewCell {
         let theme = presentationData.theme
 
         self.fileNameLabel.text = item.fileName.isEmpty ? "Без названия" : item.fileName
-        self.fileNameLabel.textColor = theme.list.itemPrimaryTextColor
+        self.fileNameLabel.textColor = .white
 
         self.senderLabel.text = item.senderName
-        self.senderLabel.textColor = theme.list.itemSecondaryTextColor
+        self.senderLabel.textColor = UIColor.white.withAlphaComponent(0.58)
 
         if let author = item.message.author {
             self.senderAvatarNode.setPeer(
@@ -233,14 +232,14 @@ final class MediaBrowserItemCell: UITableViewCell {
                 peer: EnginePeer(author),
                 displayDimensions: CGSize(width: 18.0, height: 18.0)
             )
-            self.senderAvatarNode.isHidden = false
+            self.senderAvatarNode.isHidden = true
         } else {
             self.senderAvatarNode.isHidden = true
         }
 
         let locale = Locale(identifier: presentationData.strings.baseLanguageCode)
         self.timeLabel.text = mediaBrowserDateString(item.timestamp, locale: locale)
-        self.timeLabel.textColor = theme.list.itemSecondaryTextColor
+        self.timeLabel.textColor = UIColor.white.withAlphaComponent(0.50)
 
         if item.fileSize > 0 {
             self.sizeLabel.text = Self.formatFileSize(item.fileSize)
@@ -249,10 +248,10 @@ final class MediaBrowserItemCell: UITableViewCell {
             self.sizeLabel.text = ""
             self.sizeLabel.isHidden = true
         }
-        self.sizeLabel.textColor = theme.list.itemSecondaryTextColor
+        self.sizeLabel.textColor = UIColor.white.withAlphaComponent(0.50)
         self.updatePlaybackProgress(playbackProgress, for: item, presentationData: presentationData)
 
-        let placeholderColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.18)
+        let placeholderColor = UIColor.white.withAlphaComponent(0.12)
         self.thumbnailView.backgroundColor = placeholderColor
         self.thumbnailDisposable?.dispose()
         self.thumbnailDisposable = nil
@@ -305,7 +304,7 @@ final class MediaBrowserItemCell: UITableViewCell {
             }
         } else if let format = Self.extractFormat(from: item) {
             self.formatLabel.text = format
-            self.formatLabel.textColor = theme.list.itemPrimaryTextColor.withAlphaComponent(0.7)
+            self.formatLabel.textColor = UIColor.white.withAlphaComponent(0.72)
             self.formatLabel.isHidden = false
         } else {
             self.formatLabel.isHidden = true
@@ -323,7 +322,7 @@ final class MediaBrowserItemCell: UITableViewCell {
             return false
         }
         self.dualScenarioIcon.isHidden = !isDualScenario
-        self.dualScenarioIcon.tintColor = theme.list.itemAccentColor
+        self.dualScenarioIcon.tintColor = UIColor.white.withAlphaComponent(0.72)
 
         setNeedsLayout()
     }
@@ -344,10 +343,9 @@ final class MediaBrowserItemCell: UITableViewCell {
             setNeedsLayout()
             return
         }
-        let theme = presentationData.theme
         self.visiblePlaybackProgress = normalizedProgress
-        self.progressTrackView.backgroundColor = theme.list.itemSecondaryTextColor.withAlphaComponent(0.16)
-        self.progressFillView.backgroundColor = theme.list.itemAccentColor
+        self.progressTrackView.backgroundColor = UIColor.white.withAlphaComponent(0.16)
+        self.progressFillView.backgroundColor = UIColor(red: 10.0 / 255.0, green: 132.0 / 255.0, blue: 1.0, alpha: 1.0)
         self.progressTrackView.isHidden = false
         setNeedsLayout()
     }

@@ -162,7 +162,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.participantsCountLabel.font = UIFont.systemFont(ofSize: 15.0, weight: .regular)
 
         self.block3TimeLabel = UILabel()
-        self.block3TimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 14.0, weight: .regular)
+        self.block3TimeLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 12.0, weight: .regular)
         self.block3TimeLabel.textAlignment = .right
         self.block3TimeLabel.adjustsFontSizeToFitWidth = true
         self.block3TimeLabel.minimumScaleFactor = 0.82
@@ -213,12 +213,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.rightShadeView = GradientView()
         self.rightShadeView.setPoints(start: CGPoint(x: 0.0, y: 0.5), end: CGPoint(x: 1.0, y: 0.5))
-        self.rightShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.62)])
+        self.rightShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.52)])
         self.rightShadeView.isHidden = true
         self.rightShadeView.isUserInteractionEnabled = false
 
         self.bottomShadeView = GradientView()
-        self.bottomShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.55)])
+        self.bottomShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.78)])
         self.bottomShadeView.isHidden = true
         self.bottomShadeView.isUserInteractionEnabled = false
 
@@ -608,7 +608,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         if self.usesEmbeddedPlaybackChrome {
             if self.shouldShowCompactEmbeddedAction && canPlay {
                 let iconName = self.isPlaying ? "pause.circle.fill" : "play.circle.fill"
-                self.playButton.setImage(UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 48.0, weight: .regular)), for: .normal)
+                self.playButton.setImage(UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 42.0, weight: .regular)), for: .normal)
                 self.playButton.isHidden = false
             } else {
                 self.playButton.isHidden = true
@@ -619,7 +619,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             if canPlay {
                 self.playButton.isHidden = false
                 let iconName = self.isPlaying ? "pause.fill" : "play.fill"
-                self.playButton.setImage(UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 22.0, weight: .regular)), for: .normal)
+                self.playButton.setImage(UIImage(systemName: iconName, withConfiguration: UIImage.SymbolConfiguration(pointSize: 19.0, weight: .semibold)), for: .normal)
             } else {
                 self.playButton.isHidden = true
             }
@@ -897,8 +897,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         guard duration >= Self.minimumDisplayDuration else {
             return Self.formatTime(elapsed)
         }
-        let remaining = max(0.0, duration - elapsed)
-        return "\(Self.formatTime(elapsed)) / -\(Self.formatTime(remaining))"
+        return "\(Self.formatTime(elapsed)) / \(Self.formatTime(duration))"
     }
 
     private func updateBlock2Progress(_ status: MediaPlayerStatus) {
@@ -1089,8 +1088,8 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.rightShadeView.isHidden = false
             self.bottomShadeView.isHidden = false
             let topShadeHeight = (safeInsets.top + 12.0) + 36.0 + 80.0
-            let bottomShadeHeight = (safeInsets.bottom + 14.0) + 32.0 + 60.0
-            let rightShadeWidth = max(innerWidth * 0.42, 180.0)
+            let bottomShadeHeight = (safeInsets.bottom + 14.0) + 32.0 + 70.0
+            let rightShadeWidth = max(innerWidth * 0.36, 150.0)
             self.topShadeView.frame = CGRect(x: 0, y: 0, width: innerWidth, height: topShadeHeight)
             self.rightShadeView.frame = CGRect(x: innerWidth - rightShadeWidth, y: 0, width: rightShadeWidth, height: innerHeight)
             self.bottomShadeView.frame = CGRect(x: 0, y: innerHeight - bottomShadeHeight, width: innerWidth, height: bottomShadeHeight)
@@ -1127,17 +1126,17 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let dateBlockWidth = dateLabelWidth + 6.0 + dateDotSize
 
         if overlay {
-            self.fileNameLabel.font = UIFont.systemFont(ofSize: self.isFocusMode ? 14.0 : 28.0, weight: .regular)
+            self.fileNameLabel.font = UIFont.systemFont(ofSize: self.isFocusMode ? 14.0 : 25.0, weight: .regular)
             self.fileNameLabel.textAlignment = .right
             self.dateLabel.textAlignment = .right
-            let titleHeight = self.fileNameLabel.font.lineHeight * (self.isFocusMode ? 1.2 : 2.0)
-            let titleTop = self.isFocusMode ? max(topInset + muteSize + 12.0, innerHeight * 0.34) : topInset + muteSize + 16.0
+            let titleHeight = self.fileNameLabel.font.lineHeight * (self.isFocusMode ? 1.2 : 1.35)
+            let titleTop = self.isFocusMode ? max(topInset + muteSize + 12.0, innerHeight * 0.34) : topInset + muteSize + 34.0
             let titleRight = innerWidth - rightInset
             let titleLeft = max(leftInset + muteSize + 16.0, innerWidth * (self.isFocusMode ? 0.58 : 0.40))
             let titleWidth = max(120.0, titleRight - titleLeft)
             self.fileNameLabel.frame = CGRect(x: titleLeft, y: titleTop, width: titleWidth, height: titleHeight)
 
-            let dateY = self.fileNameLabel.frame.maxY + (self.isFocusMode ? 1.0 : 6.0)
+            let dateY = self.fileNameLabel.frame.maxY + (self.isFocusMode ? 1.0 : 4.0)
             self.dateLabel.frame = CGRect(x: titleRight - dateBlockWidth, y: dateY, width: dateLabelWidth, height: 20.0)
             self.senderAvatarNode.view.frame = CGRect(x: self.dateLabel.frame.maxX + 6.0, y: dateY + (20.0 - dateDotSize) / 2.0, width: dateDotSize, height: dateDotSize)
             self.senderAvatarNode.updateSize(size: CGSize(width: dateDotSize, height: dateDotSize))
@@ -1160,8 +1159,8 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             self.senderAvatarNode.updateSize(size: CGSize(width: dateDotSize, height: dateDotSize))
         }
 
-        let iconSize: CGFloat = 24.0
-        let iconSpacing: CGFloat = 6.0
+        let iconSize: CGFloat = 22.0
+        let iconSpacing: CGFloat = 8.0
         let iconsRight = innerWidth - rightInset
         let iconsY = innerHeight - bottomInset - iconSize
         let canPlayPlayback = canPlay
@@ -1235,7 +1234,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             let timeText = self.block3TimeLabel.text ?? ""
             let timeAttrs: [NSAttributedString.Key: Any] = [.font: self.block3TimeLabel.font as Any]
             let timeSize = (timeText as NSString).size(withAttributes: timeAttrs)
-            let timeWidth = max(106.0, ceil(timeSize.width) + 4.0)
+            let timeWidth = max(92.0, ceil(timeSize.width) + 4.0)
             let timeHeight = ceil(timeSize.height)
             self.block3TimeLabel.frame = CGRect(x: iconsRight - timeWidth, y: statusY, width: timeWidth, height: timeHeight)
 

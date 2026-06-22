@@ -45,7 +45,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         self.emptyLabel = UILabel()
         self.emptyLabel.text = "Нет медиафайлов"
         self.emptyLabel.textAlignment = .center
-        self.emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
+        self.emptyLabel.textColor = UIColor.white.withAlphaComponent(0.62)
         self.emptyLabel.font = UIFont.systemFont(ofSize: 16)
         self.emptyLabel.isHidden = true
 
@@ -60,7 +60,7 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
         super.init()
 
-        self.backgroundColor = presentationData.theme.list.plainBackgroundColor
+        self.backgroundColor = .black
     }
 
     deinit {
@@ -73,9 +73,9 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
         self.tableView.dataSource = self
         self.tableView.delegate = self
         self.tableView.register(MediaBrowserItemCell.self, forCellReuseIdentifier: MediaBrowserItemCell.reuseIdentifier)
-        self.tableView.rowHeight = 76
+        self.tableView.rowHeight = 64
 
-        self.senderFilterChip.backgroundColor = UIColor.black.withAlphaComponent(0.6)
+        self.senderFilterChip.backgroundColor = UIColor.black.withAlphaComponent(0.72)
         self.senderFilterChip.layer.cornerRadius = 22.0
         self.senderFilterChip.clipsToBounds = true
         self.senderFilterChip.onTapMulti = { [weak self] in
@@ -270,8 +270,8 @@ final class MediaBrowserListNode: ASDisplayNode, UITableViewDataSource, UITableV
 
     func updatePresentationData(_ presentationData: PresentationData) {
         self.presentationData = presentationData
-        self.backgroundColor = presentationData.theme.list.plainBackgroundColor
-        self.emptyLabel.textColor = presentationData.theme.list.itemSecondaryTextColor
+        self.backgroundColor = .black
+        self.emptyLabel.textColor = UIColor.white.withAlphaComponent(0.62)
         self.senderDropdown.updatePresentationData(presentationData)
         self.tableView.reloadData()
     }

@@ -6094,7 +6094,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                 cornerRadius: outerSize / 2.0,
                 isDark: self.presentationData.theme.overallDarkAppearance,
                 tintColor: self.mediaBrowserCircleGlassTintColor(),
-                isInteractive: true,
+                isInteractive: false,
                 transition: .immediate
             )
             glassView.tag = Self.mediaBrowserCircleGlassTag
@@ -8215,7 +8215,7 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
                     cornerRadius: glassView.bounds.height * 0.5,
                     isDark: self.presentationData.theme.overallDarkAppearance,
                     tintColor: self.mediaBrowserCircleGlassTintColor(),
-                    isInteractive: true,
+                    isInteractive: false,
                     transition: .immediate
                 )
             }

@@ -939,7 +939,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
     private func applyPresentationData(_ presentationData: PresentationData) {
         self.presentationData = presentationData
-        self.contentNode.backgroundColor = self.isFocusMode ? .clear : presentationData.theme.list.plainBackgroundColor
+        self.contentNode.backgroundColor = self.isFocusMode ? .clear : .black
         self.playerNode.updatePresentationData(presentationData)
         self.tabBarNode.updatePresentationData(presentationData)
         self.listNode.updatePresentationData(presentationData)
@@ -1227,13 +1227,13 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             )
         }
         transition.updateFrame(node: self.contentNode, frame: contentFrame)
-        self.contentNode.backgroundColor = self.isFocusMode ? .clear : self.presentationData.theme.list.plainBackgroundColor
+        self.contentNode.backgroundColor = self.isFocusMode ? .clear : .black
         self.contentNode.clipsToBounds = !self.isFocusMode
 
         let listVisible = showLibrary && !self.isExpanded && !self.isFocusMode && !isChatPicker
         let onTVVisible = listVisible && self.selectedTab == .onTV
         let mediaListVisible = listVisible && self.selectedTab != .onTV
-        let tabBarHeight: CGFloat = 44.0
+        let tabBarHeight: CGFloat = 48.0
 
         let playerFrame: CGRect
         if isChatPicker {
@@ -1241,7 +1241,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         } else if self.isFocusMode {
             playerFrame = .zero
         } else if listVisible {
-            playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height * 0.35)
+            playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: min(208.0, max(184.0, floor(contentFrame.width * 0.562))))
         } else {
             playerFrame = CGRect(x: 0, y: 0, width: contentFrame.width, height: contentFrame.height)
         }
