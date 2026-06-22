@@ -12,6 +12,7 @@ import AvatarNode
 
 final class MediaBrowserPlayerNode: ASDisplayNode {
     private static let minimumDisplayDuration: Double = 1.0
+    private static let telegramCornerRadius: CGFloat = 13.0
 
     private let context: AccountContext
     private var presentationData: PresentationData
@@ -120,8 +121,11 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.presentationData = presentationData
 
         self.containerNode = ASDisplayNode()
-        self.containerNode.cornerRadius = 16.0
+        self.containerNode.cornerRadius = Self.telegramCornerRadius
         self.containerNode.clipsToBounds = true
+        if #available(iOS 13.0, *) {
+            self.containerNode.layer.cornerCurve = .continuous
+        }
 
         self.previewContainer = ASDisplayNode()
 
@@ -220,7 +224,10 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.pulseGlowLayer = CALayer()
         self.pulseGlowLayer.borderColor = UIColor(rgb: 0x05614C).cgColor
         self.pulseGlowLayer.borderWidth = 2.0
-        self.pulseGlowLayer.cornerRadius = 16.0
+        self.pulseGlowLayer.cornerRadius = Self.telegramCornerRadius
+        if #available(iOS 13.0, *) {
+            self.pulseGlowLayer.cornerCurve = .continuous
+        }
         self.pulseGlowLayer.shadowColor = UIColor(rgb: 0x2DA547).cgColor
         self.pulseGlowLayer.shadowOpacity = 0.8
         self.pulseGlowLayer.shadowRadius = 12.0
@@ -994,16 +1001,22 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let cornerRadius: CGFloat
         if overlay {
             containerFrame = CGRect(origin: .zero, size: size)
-            cornerRadius = 16.0
+            cornerRadius = Self.telegramCornerRadius
         } else {
             let inset: CGFloat = 8.0
             containerFrame = CGRect(x: inset, y: inset, width: size.width - inset * 2, height: size.height - inset * 2)
-            cornerRadius = 16.0
+            cornerRadius = Self.telegramCornerRadius
         }
         transition.updateFrame(node: self.containerNode, frame: containerFrame)
         transition.updateCornerRadius(node: self.containerNode, cornerRadius: cornerRadius)
+        if #available(iOS 13.0, *) {
+            self.containerNode.layer.cornerCurve = .continuous
+        }
         self.pulseGlowLayer.frame = CGRect(origin: .zero, size: containerFrame.size)
         self.pulseGlowLayer.cornerRadius = cornerRadius
+        if #available(iOS 13.0, *) {
+            self.pulseGlowLayer.cornerCurve = .continuous
+        }
 
         let innerWidth = containerFrame.width
         let innerHeight = containerFrame.height

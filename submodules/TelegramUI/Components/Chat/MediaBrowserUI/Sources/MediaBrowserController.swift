@@ -339,6 +339,7 @@ private final class MediaBrowserFocusOverlay {
 
 final class MediaBrowserControllerNode: ASDisplayNode {
     private static var detachedFocusOverlay: MediaBrowserFocusOverlay?
+    private static let windowCornerRadius: CGFloat = 13.0
 
     private let context: AccountContext
     private var peerId: EnginePeer.Id
@@ -406,8 +407,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         self.contentNode = ASDisplayNode()
         self.contentNode.backgroundColor = presentationData.theme.list.plainBackgroundColor
-        self.contentNode.cornerRadius = 16.0
+        self.contentNode.cornerRadius = Self.windowCornerRadius
         self.contentNode.clipsToBounds = true
+        if #available(iOS 13.0, *) {
+            self.contentNode.layer.cornerCurve = .continuous
+        }
 
         self.playerNode = MediaBrowserPlayerNode(context: context, presentationData: presentationData)
         self.playbackProgressStore = MediaPlaybackProgressStore(accountPeerId: context.account.peerId)
@@ -1195,8 +1199,11 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         let showLibrary = self.isLibraryVisible || isChatPicker
         let verticalPadding: CGFloat = self.isFocusMode ? 0.0 : 76.0
         let horizontalPadding: CGFloat = self.isFocusMode ? 0.0 : 16.0
-        let cornerRadius: CGFloat = self.isFocusMode ? 0.0 : 16.0
+        let cornerRadius: CGFloat = self.isFocusMode ? 0.0 : Self.windowCornerRadius
         transition.updateCornerRadius(node: self.contentNode, cornerRadius: cornerRadius)
+        if #available(iOS 13.0, *) {
+            self.contentNode.layer.cornerCurve = .continuous
+        }
         let contentFrame: CGRect
         if self.isFocusMode || showLibrary {
             contentFrame = CGRect(
