@@ -339,7 +339,7 @@ private final class MediaBrowserFocusOverlay {
 
 final class MediaBrowserControllerNode: ASDisplayNode {
     private static var detachedFocusOverlay: MediaBrowserFocusOverlay?
-    private static let windowCornerRadius: CGFloat = 13.0
+    private static let windowCornerRadius: CGFloat = 18.0
 
     private let context: AccountContext
     private var peerId: EnginePeer.Id
@@ -1197,20 +1197,23 @@ final class MediaBrowserControllerNode: ASDisplayNode {
 
         let isChatPicker = self.mode == .chatPicker
         let showLibrary = self.isLibraryVisible || isChatPicker
-        let verticalPadding: CGFloat = self.isFocusMode ? 0.0 : 76.0
         let horizontalPadding: CGFloat = self.isFocusMode ? 0.0 : 16.0
+        let expandedTopPadding: CGFloat = max(layout.safeInsets.top + 92.0, 132.0)
+        let expandedBottomPadding: CGFloat = max(layout.safeInsets.bottom + 12.0, 20.0)
         let cornerRadius: CGFloat = self.isFocusMode ? 0.0 : Self.windowCornerRadius
         transition.updateCornerRadius(node: self.contentNode, cornerRadius: cornerRadius)
         if #available(iOS 13.0, *) {
             self.contentNode.layer.cornerCurve = .continuous
         }
         let contentFrame: CGRect
-        if self.isFocusMode || showLibrary {
+        if self.isFocusMode {
+            contentFrame = CGRect(origin: .zero, size: layout.size)
+        } else if showLibrary {
             contentFrame = CGRect(
                 x: horizontalPadding,
-                y: verticalPadding,
+                y: expandedTopPadding,
                 width: layout.size.width - horizontalPadding * 2.0,
-                height: layout.size.height - verticalPadding * 2.0
+                height: max(0.0, layout.size.height - expandedTopPadding - expandedBottomPadding)
             )
         } else {
             let compactWidth = layout.size.width - horizontalPadding * 2.0

@@ -12,7 +12,7 @@ import AvatarNode
 
 final class MediaBrowserPlayerNode: ASDisplayNode {
     private static let minimumDisplayDuration: Double = 1.0
-    private static let telegramCornerRadius: CGFloat = 13.0
+    private static let telegramCornerRadius: CGFloat = 18.0
 
     private let context: AccountContext
     private var presentationData: PresentationData
