@@ -326,29 +326,10 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
     }
 
     private func handleStreamFound(_ body: [String: Any]) {
-        guard let urlString = body["url"] as? String else {
-            return
-        }
-        guard let url = Self.streamUrl(from: urlString, baseUrl: body["baseUrl"] as? String) else {
-            return
-        }
-        if self.activeStreamUrl == url || self.rejectedStreamUrls.contains(url) {
-            return
-        }
-        let referer = (body["referer"] as? String).flatMap { URL(string: $0) } ?? self.webView.url
-        let userAgent = body["userAgent"] as? String
-        let cookie = body["cookie"] as? String
-        let source = body["source"] as? String
-        let candidate = StreamCandidate(
-            url: url,
-            referer: referer,
-            userAgent: userAgent,
-            cookie: cookie,
-            isPrimaryVideoSource: source == "video-source"
-        )
-        if self.pendingStreamCandidate == nil && !candidate.isPrimaryVideoSource && !self.hasPlayableVideo {
-            self.pendingStreamCandidate = candidate
-        }
+        _ = body
+        // Generic web pages should keep playback inside WebKit. Stream URLs found in
+        // page resources are often partial/audio-only CDN assets and can hide the
+        // real embedded player behind a black AVPlayer layer.
     }
 
     private func activateStream(_ candidate: StreamCandidate) {
@@ -890,9 +871,14 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
               return false;
             }
           }
+          function hasVideoFrame(video) {
+            if (!video) { return false; }
+            return Number.isFinite(video.videoWidth) && Number.isFinite(video.videoHeight) && video.videoWidth > 1 && video.videoHeight > 1;
+          }
           function isPlayableVideo(video) {
             if (!video) { return false; }
             if (!hasVideoSource(video)) { return false; }
+            if (!hasVideoFrame(video)) { return false; }
             if (video.readyState >= 1) { return true; }
             if (Number.isFinite(video.duration) && video.duration > 0) { return true; }
             return false;
@@ -900,6 +886,7 @@ final class GenericWebVideoPreviewNode: ASDisplayNode, MediaPreviewNode, WKScrip
           function videoScore(video) {
             if (!video || !hasVideoSource(video)) { return -1; }
             if (!isDisplayable(video)) { return -1; }
+            if (!hasVideoFrame(video)) { return -1; }
             var score = 0;
             var rect = video.getBoundingClientRect();
             score += Math.min(100000, rect.width * rect.height);
