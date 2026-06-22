@@ -8,24 +8,31 @@ import AccountContext
 import TelegramPresentationData
 import ShareController
 
+public enum MediaBrowserInitialDisplayMode {
+    case playerOnly
+    case library
+}
+
 public final class MediaBrowserController: ViewController {
     private let context: AccountContext
     private var peerId: EnginePeer.Id
     private let initialMessageId: EngineMessage.Id?
     private let initialPosition: Double?
     private let initialTab: MediaBrowserTab
+    private let initialDisplayMode: MediaBrowserInitialDisplayMode
 
     private var presentationData: PresentationData
     private var presentationDataDisposable: Disposable?
     public var dismissed: (() -> Void)?
     public var onJumpToMessageRequested: ((EngineMessage.Id) -> Void)?
 
-    public init(context: AccountContext, peerId: EnginePeer.Id, initialMessageId: EngineMessage.Id? = nil, initialPosition: Double? = nil, initialTab: MediaBrowserTab = .allFiles) {
+    public init(context: AccountContext, peerId: EnginePeer.Id, initialMessageId: EngineMessage.Id? = nil, initialPosition: Double? = nil, initialTab: MediaBrowserTab = .allFiles, initialDisplayMode: MediaBrowserInitialDisplayMode = .library) {
         self.context = context
         self.peerId = peerId
         self.initialMessageId = initialMessageId
         self.initialPosition = initialPosition
         self.initialTab = initialTab
+        self.initialDisplayMode = initialDisplayMode
         self.presentationData = context.sharedContext.currentPresentationData.with { $0 }
 
         super.init(navigationBarPresentationData: nil)
@@ -58,6 +65,7 @@ public final class MediaBrowserController: ViewController {
             initialMessageId: self.initialMessageId,
             initialPosition: self.initialPosition,
             initialTab: self.initialTab,
+            initialDisplayMode: self.initialDisplayMode,
             dismiss: { [weak self] in
                 self?.dismissed?()
                 self?.dismiss(animated: true)
@@ -339,6 +347,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private let initialMessageId: EngineMessage.Id?
     private let initialPosition: Double?
     private let initialTab: MediaBrowserTab
+    private let initialDisplayMode: MediaBrowserInitialDisplayMode
     private var didApplyInitialSelection: Bool = false
 
     private let dimNode: ASDisplayNode
@@ -359,6 +368,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
     private var validLayout: ContainerViewLayout?
     private var isExpanded: Bool = false
     private var isFocusMode: Bool = false
+    private var isLibraryVisible: Bool
     private var basePresentationData: PresentationData
     private var mode: Mode
     private var selectedTab: MediaBrowserTab = .allFiles
@@ -378,7 +388,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         case chatPicker
     }
 
-    init(context: AccountContext, peerId: EnginePeer.Id, presentationData: PresentationData, initialMessageId: EngineMessage.Id?, initialPosition: Double?, initialTab: MediaBrowserTab, dismiss: @escaping () -> Void) {
+    init(context: AccountContext, peerId: EnginePeer.Id, presentationData: PresentationData, initialMessageId: EngineMessage.Id?, initialPosition: Double?, initialTab: MediaBrowserTab, initialDisplayMode: MediaBrowserInitialDisplayMode, dismiss: @escaping () -> Void) {
         self.context = context
         self.peerId = peerId
         self.presentationData = presentationData
@@ -387,6 +397,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         self.initialMessageId = initialMessageId
         self.initialPosition = initialPosition
         self.initialTab = initialTab
+        self.initialDisplayMode = initialDisplayMode
+        self.isLibraryVisible = initialDisplayMode == .library
         self.mode = .files
 
         self.dimNode = ASDisplayNode()
@@ -452,6 +464,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         super.init()
 
         self.selectedTab = initialTab
+        self.playerNode.setPrefersCompactOverlay(true)
 
         onBackHandlerPlaceholder = { [weak self] in
             self?.switchToChatPicker()
@@ -492,8 +505,12 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             guard let self = self else { return }
             self.requestFocusMode(!self.isFocusMode)
         }
-        self.playerNode.onCloseMediaBrowser = { [weak self] in
-            self?.dismiss()
+        self.playerNode.onToggleMediaLibrary = { [weak self] in
+            guard let self = self else { return }
+            self.isLibraryVisible = !self.isLibraryVisible
+            if let layout = self.validLayout {
+                self.containerLayoutUpdated(layout: layout, transition: .animated(duration: 0.25, curve: .easeInOut))
+            }
         }
         self.playerNode.onPresentGallery = { [weak self] item in
             guard let self = self else { return }
@@ -609,7 +626,8 @@ final class MediaBrowserControllerNode: ASDisplayNode {
             peerId: peerId,
             initialMessageId: messageId,
             initialPosition: position,
-            initialTab: selectedTab == .onTV ? .allFiles : selectedTab
+            initialTab: selectedTab == .onTV ? .allFiles : selectedTab,
+            initialDisplayMode: .library
         )
         controller.modalPresentationStyle = .overCurrentContext
         context.sharedContext.applicationBindings.getWindowHost()?.present(controller, on: .root, blockInteraction: false, completion: {})
@@ -1173,17 +1191,36 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         transition.updateAlpha(node: self.dimNode, alpha: self.isFocusMode ? 0.0 : 0.4)
         self.dimNode.backgroundColor = UIColor.black
 
+        let isChatPicker = self.mode == .chatPicker
+        let showLibrary = self.isLibraryVisible || isChatPicker
         let verticalPadding: CGFloat = self.isFocusMode ? 0.0 : 76.0
         let horizontalPadding: CGFloat = self.isFocusMode ? 0.0 : 16.0
         let cornerRadius: CGFloat = self.isFocusMode ? 0.0 : 16.0
         transition.updateCornerRadius(node: self.contentNode, cornerRadius: cornerRadius)
-        let contentFrame = CGRect(x: horizontalPadding, y: verticalPadding, width: layout.size.width - horizontalPadding * 2, height: layout.size.height - verticalPadding * 2)
+        let contentFrame: CGRect
+        if self.isFocusMode || showLibrary {
+            contentFrame = CGRect(
+                x: horizontalPadding,
+                y: verticalPadding,
+                width: layout.size.width - horizontalPadding * 2.0,
+                height: layout.size.height - verticalPadding * 2.0
+            )
+        } else {
+            let compactWidth = layout.size.width - horizontalPadding * 2.0
+            let compactHeight = min(270.0, max(196.0, floor(compactWidth * 0.56)))
+            let compactY = max(layout.safeInsets.top + 118.0, 148.0)
+            contentFrame = CGRect(
+                x: horizontalPadding,
+                y: compactY,
+                width: compactWidth,
+                height: compactHeight
+            )
+        }
         transition.updateFrame(node: self.contentNode, frame: contentFrame)
         self.contentNode.backgroundColor = self.isFocusMode ? .clear : self.presentationData.theme.list.plainBackgroundColor
         self.contentNode.clipsToBounds = !self.isFocusMode
 
-        let isChatPicker = self.mode == .chatPicker
-        let listVisible = !self.isExpanded && !self.isFocusMode && !isChatPicker
+        let listVisible = showLibrary && !self.isExpanded && !self.isFocusMode && !isChatPicker
         let onTVVisible = listVisible && self.selectedTab == .onTV
         let mediaListVisible = listVisible && self.selectedTab != .onTV
         let tabBarHeight: CGFloat = 44.0
@@ -1215,6 +1252,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         let tabBarFrame = CGRect(x: 0, y: playerHeight, width: contentFrame.width, height: tabBarHeight)
         transition.updateFrame(node: self.tabBarNode, frame: tabBarFrame)
         self.tabBarNode.updateLayout(width: contentFrame.width, transition: transition)
+        self.tabBarNode.isHidden = !listVisible
         transition.updateAlpha(node: self.tabBarNode, alpha: listVisible ? 1.0 : 0.0)
 
         let listTop = playerHeight + tabBarHeight

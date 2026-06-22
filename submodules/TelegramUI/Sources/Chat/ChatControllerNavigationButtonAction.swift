@@ -129,7 +129,7 @@ extension ChatControllerImpl {
             break
         case .openMediaBrowser:
             if case let .peer(peerId) = self.chatLocation {
-                let controller = MediaBrowserController(context: self.context, peerId: peerId)
+                let controller = MediaBrowserController(context: self.context, peerId: peerId, initialDisplayMode: .playerOnly)
                 controller.modalPresentationStyle = .overCurrentContext
                 self.navigationController?.interactivePopGestureRecognizer?.isEnabled = false
                 controller.dismissed = { [weak self] in

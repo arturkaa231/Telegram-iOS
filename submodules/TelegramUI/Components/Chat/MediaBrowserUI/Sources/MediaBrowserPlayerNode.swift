@@ -43,6 +43,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private let playButton: UIButton
     private let loadingIndicator: UIActivityIndicatorView
     private let topShadeView: GradientView
+    private let rightShadeView: GradientView
     private let bottomShadeView: GradientView
     private let pulseGlowLayer: CALayer
 
@@ -71,13 +72,14 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     var onPlaybackStatusChanged: ((MediaPreviewPlaybackStatus) -> Void)?
     var onSeekRequested: ((Double, CGFloat) -> Void)?
     var onPlaybackPositionUpdated: ((Double, CGFloat, Bool) -> Void)?
-    var onCloseMediaBrowser: (() -> Void)?
+    var onToggleMediaLibrary: (() -> Void)?
     var onToggleFocusMode: (() -> Void)?
 
     private var isMuted: Bool = false
     private var isPlaying: Bool = false
     private var isExpanded: Bool = false
     private var isFocusMode: Bool = false
+    private var prefersCompactOverlay: Bool = false
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
     private let remoteSeekTolerance: Double = 1.5
@@ -110,7 +112,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     }
 
     private var shouldShowCompactEmbeddedAction: Bool {
-        return self.usesEmbeddedPlaybackChrome && !self.usesGenericWebPlayback && !self.isExpanded && !self.isFocusMode
+        return self.usesEmbeddedPlaybackChrome && !self.usesGenericWebPlayback && !self.isExpanded && !self.isFocusMode && !self.prefersCompactOverlay
     }
 
     init(context: AccountContext, presentationData: PresentationData) {
@@ -178,7 +180,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         self.listButton = UIButton(type: .custom)
         self.listButton.setImage(UIImage(systemName: "list.bullet", withConfiguration: iconConfig), for: .normal)
-        self.listButton.accessibilityLabel = "Закрыть медиатеку"
+        self.listButton.accessibilityLabel = "Медиатека"
 
         self.shareButton = UIButton(type: .custom)
         self.shareButton.setImage(UIImage(systemName: "arrow.up.right", withConfiguration: iconConfig), for: .normal)
@@ -203,6 +205,12 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.topShadeView.setColors([UIColor.black.withAlphaComponent(0.55), UIColor.black.withAlphaComponent(0.0)])
         self.topShadeView.isHidden = true
         self.topShadeView.isUserInteractionEnabled = false
+
+        self.rightShadeView = GradientView()
+        self.rightShadeView.setPoints(start: CGPoint(x: 0.0, y: 0.5), end: CGPoint(x: 1.0, y: 0.5))
+        self.rightShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.62)])
+        self.rightShadeView.isHidden = true
+        self.rightShadeView.isUserInteractionEnabled = false
 
         self.bottomShadeView = GradientView()
         self.bottomShadeView.setColors([UIColor.black.withAlphaComponent(0.0), UIColor.black.withAlphaComponent(0.55)])
@@ -294,6 +302,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         let host = self.containerNode.view
         host.addSubview(self.topShadeView)
+        host.addSubview(self.rightShadeView)
         host.addSubview(self.bottomShadeView)
         host.addSubview(self.loadingIndicator)
         host.addSubview(self.playButton)
@@ -371,7 +380,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         let themePrimary = list.itemPrimaryTextColor
         let themeSecondary = list.itemSecondaryTextColor
         let cardBg = list.itemBlocksBackgroundColor
-        let overlay = self.isExpanded || self.isFocusMode
+        let overlay = self.isExpanded || self.isFocusMode || self.prefersCompactOverlay
 
         let chromePrimary: UIColor = overlay ? .white : themePrimary
         let chromeSecondary: UIColor = overlay ? UIColor.white.withAlphaComponent(0.85) : themeSecondary
@@ -598,7 +607,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
             }
             return
         }
-        if self.isExpanded || self.isFocusMode {
+        if self.isExpanded || self.isFocusMode || self.prefersCompactOverlay {
             if canPlay {
                 self.playButton.isHidden = false
                 let iconName = self.isPlaying ? "pause.fill" : "play.fill"
@@ -654,7 +663,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     @objc private func listTapped() {
         self.setExpanded(false, notify: true)
-        self.onCloseMediaBrowser?()
+        self.onToggleMediaLibrary?()
     }
 
     @objc private func galleryTapped() {
@@ -951,6 +960,16 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         self.refreshPlayButtonVisibility()
     }
 
+    func setPrefersCompactOverlay(_ value: Bool) {
+        guard self.prefersCompactOverlay != value else { return }
+        self.prefersCompactOverlay = value
+        self.refreshColors()
+        self.refreshPlayButtonVisibility()
+        if self.lastSize.width > 0.0 && self.lastSize.height > 0.0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
+    }
+
     private func refreshFocusIcon() {
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
         let name = self.isFocusMode ? "moon.fill" : "moon"
@@ -965,7 +984,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
     func updateLayout(size: CGSize, safeInsets: UIEdgeInsets, transition: ContainedViewLayoutTransition) {
         self.lastSize = size
-        let expandedChrome = self.isExpanded || self.isFocusMode
+        let expandedChrome = self.isExpanded || self.isFocusMode || self.prefersCompactOverlay
         let overlay = expandedChrome
         let canPlay = self.previewNode?.canPlay ?? false
 
@@ -1035,13 +1054,17 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
 
         if overlay {
             self.topShadeView.isHidden = false
+            self.rightShadeView.isHidden = false
             self.bottomShadeView.isHidden = false
             let topShadeHeight = (safeInsets.top + 12.0) + 36.0 + 80.0
             let bottomShadeHeight = (safeInsets.bottom + 14.0) + 32.0 + 60.0
+            let rightShadeWidth = max(innerWidth * 0.42, 180.0)
             self.topShadeView.frame = CGRect(x: 0, y: 0, width: innerWidth, height: topShadeHeight)
+            self.rightShadeView.frame = CGRect(x: innerWidth - rightShadeWidth, y: 0, width: rightShadeWidth, height: innerHeight)
             self.bottomShadeView.frame = CGRect(x: 0, y: innerHeight - bottomShadeHeight, width: innerWidth, height: bottomShadeHeight)
         } else {
             self.topShadeView.isHidden = true
+            self.rightShadeView.isHidden = true
             self.bottomShadeView.isHidden = true
         }
 

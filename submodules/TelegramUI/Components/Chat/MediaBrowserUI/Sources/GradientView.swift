@@ -25,4 +25,9 @@ final class GradientView: UIView {
     func setColors(_ colors: [UIColor]) {
         self.gradientLayer.colors = colors.map { $0.cgColor }
     }
+
+    func setPoints(start: CGPoint, end: CGPoint) {
+        self.gradientLayer.startPoint = start
+        self.gradientLayer.endPoint = end
+    }
 }
