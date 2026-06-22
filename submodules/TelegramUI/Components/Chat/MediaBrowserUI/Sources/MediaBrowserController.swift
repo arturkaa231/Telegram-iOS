@@ -1248,6 +1248,7 @@ final class MediaBrowserControllerNode: ASDisplayNode {
         if self.isFocusMode {
             self.focusOverlay?.updateLayout(transition: transition)
         } else {
+            self.playerNode.setAttachedToLibrary(listVisible)
             transition.updateFrame(node: self.playerNode, frame: playerFrame)
             self.playerNode.updateLayout(size: playerFrame.size, safeInsets: .zero, transition: transition)
             transition.updateAlpha(node: self.playerNode, alpha: isChatPicker ? 0.0 : 1.0)

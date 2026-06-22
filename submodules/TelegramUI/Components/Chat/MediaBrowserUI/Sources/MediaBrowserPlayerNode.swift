@@ -81,6 +81,7 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
     private var isExpanded: Bool = false
     private var isFocusMode: Bool = false
     private var prefersCompactOverlay: Bool = false
+    private var isAttachedToLibrary: Bool = false
     private var previewAspectRatio: CGFloat?
     private var lastSize: CGSize = .zero
     private let remoteSeekTolerance: Double = 1.5
@@ -977,6 +978,14 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         }
     }
 
+    func setAttachedToLibrary(_ value: Bool) {
+        guard self.isAttachedToLibrary != value else { return }
+        self.isAttachedToLibrary = value
+        if self.lastSize.width > 0.0 && self.lastSize.height > 0.0 {
+            self.updateLayout(size: self.lastSize, transition: .immediate)
+        }
+    }
+
     private func refreshFocusIcon() {
         let iconConfig = UIImage.SymbolConfiguration(pointSize: 18.0, weight: .regular)
         let name = self.isFocusMode ? "moon.fill" : "moon"
@@ -1011,11 +1020,21 @@ final class MediaBrowserPlayerNode: ASDisplayNode {
         transition.updateCornerRadius(node: self.containerNode, cornerRadius: cornerRadius)
         if #available(iOS 13.0, *) {
             self.containerNode.layer.cornerCurve = .continuous
+            if self.isAttachedToLibrary && !self.isExpanded && !self.isFocusMode {
+                self.containerNode.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            } else {
+                self.containerNode.layer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            }
         }
         self.pulseGlowLayer.frame = CGRect(origin: .zero, size: containerFrame.size)
         self.pulseGlowLayer.cornerRadius = cornerRadius
         if #available(iOS 13.0, *) {
             self.pulseGlowLayer.cornerCurve = .continuous
+            if self.isAttachedToLibrary && !self.isExpanded && !self.isFocusMode {
+                self.pulseGlowLayer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+            } else {
+                self.pulseGlowLayer.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+            }
         }
 
         let innerWidth = containerFrame.width
