@@ -146,6 +146,8 @@ import ChatSearchNavigationContentNode
 import ChatAgeRestrictionAlertController
 import TextProcessingScreen
 import MediaBrowserUI
+import ComponentFlow
+import GlassBackgroundComponent
 
 public final class ChatControllerOverlayPresentationData {
     public let expandData: (ASDisplayNode?, () -> Void)
@@ -6083,35 +6085,20 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             circleButton.accessibilityLabel = "Медиабраузер"
             circleButton.accessibilityTraits.insert(.button)
 
-            let glassEffect: UIVisualEffect
-            if #available(iOS 26.0, *) {
-                let effect = UIGlassEffect(style: .regular)
-                effect.tintColor = self.mediaBrowserCircleGlassColor()
-                effect.isInteractive = false
-                glassEffect = effect
-            } else {
-                glassEffect = UIBlurEffect(style: self.presentationData.theme.overallDarkAppearance ? .systemUltraThinMaterialDark : .systemUltraThinMaterialLight)
-            }
-            let glassView = UIVisualEffectView(effect: glassEffect)
+            let glassView = GlassBackgroundView()
             glassView.frame = circleButton.bounds
             glassView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             glassView.isUserInteractionEnabled = false
-            glassView.clipsToBounds = true
-            glassView.layer.cornerRadius = outerSize / 2.0
-            glassView.contentView.backgroundColor = self.mediaBrowserCircleGlassColor()
+            glassView.update(
+                size: CGSize(width: outerSize, height: outerSize),
+                cornerRadius: outerSize / 2.0,
+                isDark: self.presentationData.theme.overallDarkAppearance,
+                tintColor: self.mediaBrowserCircleGlassTintColor(),
+                isInteractive: true,
+                transition: .immediate
+            )
             glassView.tag = Self.mediaBrowserCircleGlassTag
             circleButton.addSubview(glassView)
-
-            let shadeLayer = CAGradientLayer()
-            shadeLayer.colors = [
-                UIColor(white: 1.0, alpha: 0.24).cgColor,
-                UIColor(white: 1.0, alpha: 0.04).cgColor,
-                UIColor(white: 0.0, alpha: 0.14).cgColor
-            ]
-            shadeLayer.locations = [0.0, 0.48, 1.0]
-            shadeLayer.frame = glassView.bounds
-            shadeLayer.cornerRadius = outerSize / 2.0
-            glassView.contentView.layer.addSublayer(shadeLayer)
 
             let innerCircle = UIView(frame: CGRect(
                 x: (outerSize - innerSize) / 2.0,
@@ -6121,19 +6108,11 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             ))
             innerCircle.backgroundColor = self.mediaBrowserCircleIndicatorColor()
             innerCircle.layer.cornerRadius = innerSize / 2.0
-            innerCircle.layer.shadowColor = self.mediaBrowserCircleIndicatorColor().cgColor
-            innerCircle.layer.shadowOpacity = 0.45
-            innerCircle.layer.shadowRadius = 8.0
-            innerCircle.layer.shadowOffset = .zero
             innerCircle.isUserInteractionEnabled = false
             innerCircle.tag = Self.mediaBrowserCircleIndicatorTag
-            circleButton.addSubview(innerCircle)
+            glassView.contentView.addSubview(innerCircle)
 
             circleButton.layer.cornerRadius = outerSize / 2.0
-            circleButton.layer.shadowColor = UIColor.black.cgColor
-            circleButton.layer.shadowOpacity = 0.22
-            circleButton.layer.shadowRadius = 10.0
-            circleButton.layer.shadowOffset = CGSize(width: 0.0, height: 2.0)
             circleButton.clipsToBounds = false
 
             circleButton.addTarget(self, action: #selector(self.mediaBrowserButtonAction), for: .touchUpInside)
@@ -8220,12 +8199,8 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
         }
     }
 
-    private func mediaBrowserCircleGlassColor() -> UIColor {
-        if self.presentationData.theme.overallDarkAppearance {
-            return UIColor(white: 0.0, alpha: 0.38)
-        } else {
-            return self.presentationData.theme.rootController.navigationBar.opaqueBackgroundColor.withAlphaComponent(0.46)
-        }
+    private func mediaBrowserCircleGlassTintColor() -> GlassBackgroundView.TintColor {
+        return .init(kind: .panel)
     }
 
     private func updateMediaBrowserCircleButtonAppearance(animated: Bool) {
@@ -8233,18 +8208,19 @@ public final class ChatControllerImpl: TelegramBaseController, ChatController, G
             return
         }
         let indicatorColor = self.mediaBrowserCircleIndicatorColor()
-        let glassColor = self.mediaBrowserCircleGlassColor()
         let apply = {
-            if let glassView = circleButton.viewWithTag(Self.mediaBrowserCircleGlassTag) as? UIVisualEffectView {
-                if #available(iOS 26.0, *), let glassEffect = glassView.effect as? UIGlassEffect {
-                    glassEffect.tintColor = glassColor
-                    glassView.effect = glassEffect
-                }
-                glassView.contentView.backgroundColor = glassColor
+            if let glassView = circleButton.viewWithTag(Self.mediaBrowserCircleGlassTag) as? GlassBackgroundView {
+                glassView.update(
+                    size: glassView.bounds.size,
+                    cornerRadius: glassView.bounds.height * 0.5,
+                    isDark: self.presentationData.theme.overallDarkAppearance,
+                    tintColor: self.mediaBrowserCircleGlassTintColor(),
+                    isInteractive: true,
+                    transition: .immediate
+                )
             }
             if let indicatorView = circleButton.viewWithTag(Self.mediaBrowserCircleIndicatorTag) {
                 indicatorView.backgroundColor = indicatorColor
-                indicatorView.layer.shadowColor = indicatorColor.cgColor
             }
         }
         if animated {
